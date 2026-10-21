@@ -558,6 +558,7 @@ function clearDataSubscriptions() {
   pendingRequests = [];
   matches = [];
   availability = {};
+  if ($("availabilityTableWrap")) $("availabilityTableWrap").dataset.availabilityContext = "";
   planning = [];
   activityLog = [];
   strats = [];
@@ -624,7 +625,7 @@ function subscribeData() {
 
   const unsubAvailability = onSnapshot(teamDoc("availability", "week"), (snap) => {
     availability = snap.exists() ? (snap.data().values || {}) : {};
-    renderAvailability();
+    if (!snap.metadata?.hasPendingWrites) renderAvailability();
     renderSummary();
   });
   dataUnsubscribes.push(unsubAvailability);
@@ -698,6 +699,27 @@ function handleAvailabilityStatusClick(event) {
 
 function renderAvailability() {
   if (!$("availabilityTableWrap")) return;
+  const wrap = $("availabilityTableWrap");
+  const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid, currentProfile?.role]);
+  const sameContext = wrap.dataset.availabilityContext === context;
+  const keyOf = (el) => JSON.stringify([el.dataset.player, el.dataset.day, el.dataset.field]);
+  const drafts = new Map();
+  if (sameContext) wrap.querySelectorAll("[data-player]").forEach((el) => {
+    if (!el.disabled && el.dataset.syncedValue !== undefined && el.value !== el.dataset.syncedValue) {
+      drafts.set(keyOf(el), el.value);
+    }
+  });
+  const structure = JSON.stringify(players.map(p => [safeKey(p.uid || p.email || p.name || p.id), p.name, p.email, p.uid]));
+  if (sameContext && wrap.dataset.availabilityStructure === structure) {
+    wrap.querySelectorAll("[data-player]").forEach((el) => {
+      const remote = String(availability?.[el.dataset.player]?.[el.dataset.day]?.[el.dataset.field] || "");
+      // Preserve the element, focus and unsaved input while other people edit.
+      if (!drafts.has(keyOf(el)) && el.value !== remote) el.value = remote;
+      el.dataset.syncedValue = remote;
+    });
+    refreshAvailabilityColors();
+    return;
+  }
   const canEditAll = currentProfile?.role === "admin";
   const canEditOwn = currentProfile?.role === "player";
   const currentEmail = (currentProfile?.email || currentUser?.email || "").toLowerCase();
@@ -724,21 +746,34 @@ function renderAvailability() {
     html += `</tr>`;
   }
   html += `</tbody></table>`;
-  $("availabilityTableWrap").innerHTML = html;
+  wrap.innerHTML = html;
+  wrap.dataset.availabilityContext = context;
+  wrap.dataset.availabilityStructure = structure;
+  wrap.querySelectorAll("[data-player]").forEach((el) => {
+    el.dataset.syncedValue = el.value;
+    if (!el.disabled && drafts.has(keyOf(el))) el.value = drafts.get(keyOf(el));
+  });
   refreshAvailabilityColors();
   $("saveAvailabilityBtn").disabled = !(canEditAll || canEditOwn);
 }
 
 async function saveAvailability() {
-  const next = structuredClone(availability || {});
+  const next = {};
+  let changed = false;
   document.querySelectorAll("#availabilityTableWrap [data-player]").forEach((el) => {
+    if (el.disabled || el.value === el.dataset.syncedValue) return;
+    changed = true;
     const player = el.dataset.player;
     const day = el.dataset.day;
     const field = el.dataset.field;
     if (!next[player]) next[player] = {};
-    if (!next[player][day]) next[player][day] = { status: "", note: "" };
+    if (!next[player][day]) next[player][day] = {};
     next[player][day][field] = el.value;
   });
+  if (!changed) {
+    setMsg("availabilityMsg", "Aucune modification à enregistrer.");
+    return;
+  }
   try {
     await setDoc(teamDoc("availability", "week"), { values: next, updatedAt: serverTimestamp() }, { merge: true });
     await logActivity("availability", "Disponibilités mises à jour");
