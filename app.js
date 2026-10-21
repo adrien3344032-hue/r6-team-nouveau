@@ -116,6 +116,7 @@ function bindAuth() {
   $("savePlanningBtn")?.addEventListener("click", savePlanning);
   $("clearPlanningBtn")?.addEventListener("click", clearPlanning);
   $("statsPeriodFilter")?.addEventListener("change", renderAllStats);
+  $("statsModeFilter")?.addEventListener("change", renderAllStats);
   populateAdminSelects();
   $("addRoundBtn")?.addEventListener("click", () => addRoundRow());
   $("clearRoundsBtn")?.addEventListener("click", () => { $("roundsWrap").innerHTML = ""; });
@@ -559,6 +560,8 @@ function clearDataSubscriptions() {
   matches = [];
   availability = {};
   if ($("availabilityTableWrap")) $("availabilityTableWrap").dataset.availabilityContext = "";
+  if ($("planningWrap")) $("planningWrap").dataset.planningContext = "";
+  if ($("matchPlayersWrap")) $("matchPlayersWrap").dataset.matchContext = "";
   planning = [];
   activityLog = [];
   strats = [];
@@ -639,7 +642,6 @@ function subscribeData() {
   const unsubMatches = onSnapshot(query(teamCollection("matches"), orderBy("date", "desc")), (snap) => {
     matches = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderMatches();
-    renderPlanning();
     renderAllStats();
   });
   dataUnsubscribes.push(unsubMatches);
@@ -799,9 +801,24 @@ function renderSummary() {
   }).join("");
 }
 
-function renderMatchPlayerInputs() {
+function renderMatchPlayerInputs(reset = false) {
   const wrap = $("matchPlayersWrap");
   if (!wrap) return;
+  const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid]);
+  const sameContext = wrap.dataset.matchContext === context;
+  const existingRows = Array.from(wrap.querySelectorAll("[data-stat-row]"));
+  if (!reset && sameContext && JSON.stringify(existingRows.map(r => r.dataset.uid)) === JSON.stringify(players.map(p => p.uid))) {
+    existingRows.forEach((row, i) => {
+      row.dataset.name = players[i].name || "Joueur";
+      row.querySelector("strong").textContent = players[i].name || "Joueur";
+    });
+    return;
+  }
+  const drafts = new Map();
+  if (!reset && sameContext) existingRows.forEach(row => {
+    drafts.set(row.dataset.uid, Array.from(row.querySelectorAll("[data-stat]")).map(el => [el.dataset.stat, el.type === "checkbox" ? el.checked : el.value]));
+  });
+  wrap.dataset.matchContext = context;
   if (!players.length) {
     wrap.innerHTML = `<p class="muted">Aucun joueur inscrit. Les joueurs apparaissent après création de compte.</p>`;
     return;
@@ -820,6 +837,12 @@ function renderMatchPlayerInputs() {
     }).join("")}
   </tbody></table>
   <p class="muted small-note">Plants et defuses sont calculés automatiquement depuis les rounds saisis en dessous.</p>`;
+  wrap.querySelectorAll("[data-stat-row]").forEach(row => {
+    for (const [field, value] of drafts.get(row.dataset.uid) || []) {
+      const el = row.querySelector(`[data-stat="${field}"]`);
+      if (el.type === "checkbox") el.checked = value; else el.value = value;
+    }
+  });
 }
 
 function playerOptions(selected = "") {
@@ -1052,7 +1075,7 @@ async function addMatch() {
     await logActivity("match", `Match ajouté : ${$("matchOpponent").value.trim() || "Adversaire"} — ${$("matchMap").value.trim() || "Map"}`, { matchId: matchRef.id });
     ["matchOpponent", "matchTeamScore", "matchEnemyScore", "matchVodUrl", "matchNotes"].forEach((id) => $(id).value = "");
     $("roundsWrap").innerHTML = "";
-    renderMatchPlayerInputs();
+    renderMatchPlayerInputs(true);
     setMsg("matchMsg", "Match complet ajouté. Les statistiques sont recalculées automatiquement.");
   } catch (err) {
     setMsg("matchMsg", humanError(err));
@@ -1084,16 +1107,22 @@ function renderMatches() {
 
 function filteredMatches() {
   const filter = $("statsPeriodFilter")?.value || "all";
-  if (filter === "all") return matches;
-  const daysBack = Number(filter);
+  const mode = $("statsModeFilter")?.value || "all";
   const limit = new Date();
   limit.setHours(0, 0, 0, 0);
-  limit.setDate(limit.getDate() - daysBack);
+  if (filter !== "all") limit.setDate(limit.getDate() - Number(filter));
   return matches.filter((m) => {
+    if (mode !== "all" && m.mode !== mode) return false;
+    if (filter === "all") return true;
     if (!m.date) return false;
     const d = new Date(`${m.date}T00:00:00`);
     return Number.isFinite(d.getTime()) && d >= limit;
   });
+}
+
+function matchRoundCount(match) {
+  const scoreRounds = num(match.teamScore) + num(match.enemyScore);
+  return scoreRounds > 0 ? scoreRounds : (Array.isArray(match.rounds) ? match.rounds.length : 0);
 }
 
 function renderAllStats() {
@@ -1107,12 +1136,13 @@ function calculateAggregates() {
   const sourceMatches = filteredMatches();
   const agg = {};
   for (const p of players) {
-    agg[p.uid] = { uid: p.uid, name: p.name || "Joueur", matches: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
+    agg[p.uid] = { uid: p.uid, name: p.name || "Joueur", matches: 0, roundsPlayed: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
   }
   for (const m of sourceMatches) {
     for (const [uid, s] of Object.entries(m.playerStats || {})) {
-      if (!agg[uid]) agg[uid] = { uid, name: s.name || nameByUid(uid), matches: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
+      if (!agg[uid]) agg[uid] = { uid, name: s.name || nameByUid(uid), matches: 0, roundsPlayed: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
       agg[uid].matches += 1;
+      agg[uid].roundsPlayed += matchRoundCount(m);
       if (m.result === "Victoire") agg[uid].wins += 1;
       ["kills", "headshots", "deaths", "assists", "plants", "defuses", "entryKills", "entryDeaths", "clutches"].forEach((k) => agg[uid][k] += num(s[k]));
     }
@@ -1131,7 +1161,7 @@ function renderStatsTable() {
   wrap.innerHTML = `<table><thead><tr><th>Joueur</th><th>MJ</th><th>Win</th><th>K</th><th>HS</th><th>HS%</th><th>D</th><th>A</th><th>K/D</th><th>KPR</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
     ${rows.map((r) => {
       const winRate = r.matches ? Math.round((r.wins / r.matches) * 100) : 0;
-      const kpr = r.matches ? (r.kills / r.matches).toFixed(1) : "0.0";
+      const kpr = r.roundsPlayed ? (r.kills / r.roundsPlayed).toFixed(1) : "—";
       return `<tr><td><strong>${escapeHtml(r.name)}</strong></td><td>${r.matches}</td><td>${winRate}%</td><td>${r.kills}</td><td>${r.headshots}</td><td>${hsPercent(r.headshots, r.kills)}</td><td>${r.deaths}</td><td>${r.assists}</td><td>${kd(r.kills, r.deaths)}</td><td>${kpr}</td><td>${r.entryKills}</td><td>${r.entryDeaths}</td><td>${r.plants}</td><td>${r.defuses}</td><td>${r.clutches}</td></tr>`;
     }).join("")}
   </tbody></table>`;
@@ -1321,10 +1351,29 @@ function renderMapStats() {
 }
 
 
-function renderPlanning() {
+function planningSignature(items) {
+  return JSON.stringify(items.map(item => [item.day || "", item.time || "", item.type || "", item.title || "", item.map || "", item.notes || ""]));
+}
+
+function renderPlanning(force = false) {
   const wrap = $("planningWrap");
   if (!wrap) return;
   const isAdmin = currentProfile?.role === "admin";
+  const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid, currentProfile?.role]);
+  if (isAdmin && !force && wrap.dataset.planningContext === context && wrap.dataset.planningBaseline !== undefined) {
+    const local = planningSignature(readPlanningFromDom());
+    const remote = planningSignature(planning);
+    if (local === remote) {
+      wrap.dataset.planningBaseline = remote;
+      return;
+    }
+    if (local !== wrap.dataset.planningBaseline) {
+      setMsg("planningMsg", "Une mise à jour a été reçue. Ton brouillon est conservé ; vérifie-le avant d’enregistrer.");
+      return;
+    }
+  }
+  wrap.dataset.planningContext = context;
+  wrap.dataset.planningBaseline = planningSignature(planning);
   $("planningAdminActions")?.classList.toggle("hidden", !isAdmin);
   if (isAdmin) {
     if (!planning.length) {
@@ -1368,12 +1417,12 @@ function planningCardHtml(item) {
 function addPlanningRow(item = {}) {
   planning = readPlanningFromDom();
   planning.push({ day: item.day || days[0], time: item.time || "20:30", type: item.type || "Scrim", title: item.title || "", map: item.map || "", notes: item.notes || "" });
-  renderPlanning();
+  renderPlanning(true);
 }
 
 function readPlanningFromDom() {
   const rows = [...document.querySelectorAll("#planningWrap [data-planning-row]")];
-  if (!rows.length) return planning || [];
+  if (!rows.length) return [];
   return rows.map((row) => {
     const get = (field) => row.querySelector(`[data-plan="${field}"]`)?.value || "";
     return { day: get("day"), time: get("time"), type: get("type"), title: get("title").trim(), map: get("map"), notes: get("notes").trim() };
@@ -1397,6 +1446,8 @@ async function clearPlanning() {
   if (!confirm("Vider le planning de la semaine ?")) return;
   try {
     await setDoc(teamDoc("planning", "week"), { items: [], updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
+    planning = [];
+    renderPlanning(true);
     await logActivity("planning", "Planning vidé");
     setMsg("planningMsg", "Planning vidé.");
   } catch (err) {
@@ -1488,6 +1539,7 @@ async function deleteCurrentTeam() {
     const addDelete = async (ref) => { batch.delete(ref); count++; await commitIfNeeded(); };
 
     for (const u of usersSnap.docs) {
+      if (u.id === currentUser.uid) continue;
       await addUpdate(u.ref, { role: "none", status: "no_team", teamId: "", teamName: "", updatedAt: serverTimestamp() });
     }
     for (const r of reqSnap.docs) {
@@ -1498,8 +1550,12 @@ async function deleteCurrentTeam() {
     for (const m of matchesSnap.docs) await addDelete(m.ref);
     for (const l of logSnap.docs) await addDelete(l.ref);
     for (const st of stratSnap.docs) await addDelete(st.ref);
-    await addDelete(doc(db, "teams", teamId));
+    // Commit resource cleanup before removing the administrator or the team.
     if (count > 0) await batch.commit();
+    const finalBatch = writeBatch(db);
+    finalBatch.set(doc(db, "users", currentUser.uid), { role: "none", status: "no_team", teamId: "", teamName: "", updatedAt: serverTimestamp() }, { merge: true });
+    finalBatch.delete(doc(db, "teams", teamId));
+    await finalBatch.commit();
 
     currentProfile = { ...currentProfile, role: "none", status: "no_team", teamId: "", teamName: "" };
     currentTeam = null;
