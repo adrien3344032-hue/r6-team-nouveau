@@ -1400,13 +1400,50 @@ function renderPlanning(force = false) {
 
 function planningRowHtml(item = {}, index = 0) {
   return `<div class="planning-row" data-planning-row>
-    <div><label>Jour</label><select data-plan="day">${days.map((d) => `<option value="${d}" ${item.day === d ? "selected" : ""}>${d}</option>`).join("")}</select></div>
-    <div><label>Heure</label><input data-plan="time" type="time" value="${escapeAttr(item.time || "20:30")}"></div>
-    <div><label>Type</label><select data-plan="type"><option value="Scrim" ${item.type === "Scrim" ? "selected" : ""}>Scrim</option><option value="Tournoi" ${item.type === "Tournoi" ? "selected" : ""}>Tournoi</option><option value="VOD" ${item.type === "VOD" ? "selected" : ""}>VOD</option><option value="Entraînement" ${item.type === "Entraînement" ? "selected" : ""}>Entraînement</option></select></div>
-    <div><label>Titre / adversaire</label><input data-plan="title" value="${escapeAttr(item.title || "")}" placeholder="Ex: Scrim vs Team Alpha"></div>
-    <div><label>Map</label><select data-plan="map"><option value="">-</option>${COMPETITIVE_MAPS.map((m) => `<option value="${escapeAttr(m)}" ${item.map === m ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}</select></div>
-    <div><label>Notes</label><input data-plan="notes" value="${escapeAttr(item.notes || "")}" placeholder="RDV vocal, strats..."></div>
+
+    <div>
+      <label>Jour</label>
+      <select data-plan="day">
+        ${days.map((d) => `<option value="${d}" ${item.day === d ? "selected" : ""}>${d}</option>`).join("")}
+      </select>
+    </div>
+
+    <div>
+      <label>Heure</label>
+      <input data-plan="time" type="time" value="${escapeAttr(item.time || "20:30")}">
+    </div>
+
+    <div>
+      <label>Type</label>
+      <select data-plan="type">
+        <option value="Scrim" ${item.type === "Scrim" ? "selected" : ""}>Scrim</option>
+        <option value="Tournoi" ${item.type === "Tournoi" ? "selected" : ""}>Tournoi</option>
+        <option value="VOD" ${item.type === "VOD" ? "selected" : ""}>VOD</option>
+        <option value="Entraînement" ${item.type === "Entraînement" ? "selected" : ""}>Entraînement</option>
+        <option value="Réunion" ${item.type === "Réunion" ? "selected" : ""}>Réunion</option>
+      </select>
+    </div>
+
+    <div>
+      <label>Titre / adversaire</label>
+      <input data-plan="title" value="${escapeAttr(item.title || "")}" placeholder="Ex: Scrim vs Team Alpha">
+    </div>
+
+    <div>
+      <label>Map</label>
+      <select data-plan="map">
+        <option value="">-</option>
+        ${COMPETITIVE_MAPS.map((m) => `<option value="${escapeAttr(m)}" ${item.map === m ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}
+      </select>
+    </div>
+
+    <div>
+      <label>Notes</label>
+      <input data-plan="notes" value="${escapeAttr(item.notes || "")}" placeholder="RDV vocal, strats...">
+    </div>
+
     <button type="button" class="danger mini" data-remove-planning>Supprimer</button>
+
   </div>`;
 }
 
