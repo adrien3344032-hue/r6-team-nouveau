@@ -1420,7 +1420,7 @@ function planningRowHtml(item = {}, index = 0) {
         <option value="Tournoi" ${item.type === "Tournoi" ? "selected" : ""}>Tournoi</option>
         <option value="VOD" ${item.type === "VOD" ? "selected" : ""}>VOD</option>
         <option value="Entraînement" ${item.type === "Entraînement" ? "selected" : ""}>Entraînement</option>
-        <option value="Réunion" ${item.type === "Réunion" ? "selected" : ""}>Réunion</option>
+        <option value="Strat" ${item.type === "Strat" ? "selected" : ""}>STRAT</option>
       </select>
     </div>
 
