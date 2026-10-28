@@ -1049,6 +1049,17 @@ function pickRandomPlayers(list, maxCount) {
 function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
+// Compare Firestore maps by content, independent of their property order.
+function matchFingerprint(data) {
+  const canonical = value => {
+    if (value === null || typeof value !== "object") return value;
+    if (typeof value.toJSON === "function") return canonical(value.toJSON());
+    if (Array.isArray(value)) return value.map(canonical);
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+  };
+  return JSON.stringify(canonical(data));
+}
+
 function matchEditorPlayers() {
   const list = [...players];
   for (const [uid, stat] of Object.entries(editingMatch?.data.playerStats || {})) {
@@ -1136,8 +1147,7 @@ async function addMatch() {
         const snapshot = await transaction.get(matchRef);
         if (!snapshot.exists()) throw new Error("Ce match a été supprimé. Annule la modification.");
         const latest = snapshot.data();
-        const fingerprint = value => JSON.stringify(Object.keys(value).sort().map(key => [key, value[key]]));
-        if (fingerprint(latest) !== fingerprint(edit.data)) throw new Error("Ce match a été modifié par un autre admin. Annule puis rouvre le match pour récupérer sa version.");
+        if (matchFingerprint(latest) !== matchFingerprint(edit.data)) throw new Error("Ce match a été modifié par un autre admin. Annule puis rouvre le match pour récupérer sa version.");
         transaction.update(matchRef, { ...payload, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
       });
     } else {
