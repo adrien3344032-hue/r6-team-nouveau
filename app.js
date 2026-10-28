@@ -9,6 +9,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
   getFirestore,
+  runTransaction,
   doc,
   setDoc,
   getDoc,
@@ -55,6 +56,8 @@ let currentTeam = null;
 let pendingRequests = [];
 let players = [];
 let matches = [];
+let editingMatch = null;
+let savingMatch = false;
 let availability = {};
 let planning = [];
 let activityLog = [];
@@ -110,6 +113,7 @@ function bindAuth() {
   $("availabilityTableWrap")?.addEventListener("change", refreshAvailabilityColors);
   $("availabilityTableWrap")?.addEventListener("click", handleAvailabilityStatusClick);
   $("addMatchBtn").addEventListener("click", addMatch);
+  $("cancelEditMatchBtn")?.addEventListener("click", () => { resetMatchEditor(); setMsg("matchMsg", "Modification annulée."); });
   $("addRandomMatchBtn")?.addEventListener("click", addRandomMatch);
   $("savePlayerBtn").addEventListener("click", savePlayer);
   $("addPlanningRowBtn")?.addEventListener("click", () => addPlanningRow());
@@ -550,6 +554,7 @@ function teamDoc(collectionName, docId) {
 }
 
 function clearDataSubscriptions() {
+  resetMatchEditor();
   dataUnsubscribes.forEach((fn) => {
     try { fn(); } catch (_) {}
   });
@@ -807,10 +812,10 @@ function renderMatchPlayerInputs(reset = false) {
   const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid]);
   const sameContext = wrap.dataset.matchContext === context;
   const existingRows = Array.from(wrap.querySelectorAll("[data-stat-row]"));
-  if (!reset && sameContext && JSON.stringify(existingRows.map(r => r.dataset.uid)) === JSON.stringify(players.map(p => p.uid))) {
+  if (!reset && sameContext && JSON.stringify(existingRows.map(r => r.dataset.uid)) === JSON.stringify(matchEditorPlayers().map(p => p.uid))) {
     existingRows.forEach((row, i) => {
-      row.dataset.name = players[i].name || "Joueur";
-      row.querySelector("strong").textContent = players[i].name || "Joueur";
+      row.dataset.name = matchEditorPlayers()[i].name || "Joueur";
+      row.querySelector("strong").textContent = matchEditorPlayers()[i].name || "Joueur";
     });
     return;
   }
@@ -819,12 +824,12 @@ function renderMatchPlayerInputs(reset = false) {
     drafts.set(row.dataset.uid, Array.from(row.querySelectorAll("[data-stat]")).map(el => [el.dataset.stat, el.type === "checkbox" ? el.checked : el.value]));
   });
   wrap.dataset.matchContext = context;
-  if (!players.length) {
+  if (!matchEditorPlayers().length) {
     wrap.innerHTML = `<p class="muted">Aucun joueur inscrit. Les joueurs apparaissent après création de compte.</p>`;
     return;
   }
   wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th></tr></thead><tbody>
-    ${players.map((p) => {
+    ${matchEditorPlayers().map((p) => {
       const key = safeKey(p.uid);
       return `<tr data-stat-row="${key}" data-uid="${escapeAttr(p.uid)}" data-name="${escapeAttr(p.name || "Joueur")}">
         <td><input class="small-check" type="checkbox" data-stat="present" checked></td>
@@ -846,7 +851,7 @@ function renderMatchPlayerInputs(reset = false) {
 }
 
 function playerOptions(selected = "") {
-  const opts = [`<option value="">-</option>`].concat(players.map((p) => {
+  const opts = [`<option value="">-</option>`].concat(matchEditorPlayers().map((p) => {
     const value = p.uid;
     return `<option value="${escapeAttr(value)}" ${selected === value ? "selected" : ""}>${escapeHtml(p.name || "Joueur")}</option>`;
   }));
@@ -1044,8 +1049,58 @@ function pickRandomPlayers(list, maxCount) {
 function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
+function matchEditorPlayers() {
+  const list = [...players];
+  for (const [uid, stat] of Object.entries(editingMatch?.data.playerStats || {})) {
+    if (!list.some(p => p.uid === uid)) list.push({ uid, name: stat.name || "Ancien joueur" });
+  }
+  return list;
+}
+
+function resetMatchEditor() {
+  editingMatch = null;
+  if (!$("addMatchBtn")) return;
+  $("addMatchBtn").textContent = "Ajouter le match complet";
+  $("cancelEditMatchBtn")?.classList.add("hidden");
+  $("addRandomMatchBtn")?.classList.remove("hidden");
+  ["matchOpponent", "matchTeamScore", "matchEnemyScore", "matchVodUrl", "matchNotes"].forEach(id => $(id).value = "");
+  $("roundsWrap").innerHTML = "";
+  renderMatchPlayerInputs(true);
+}
+
+window.editMatch = (id) => {
+  if (currentProfile?.role !== "admin" || savingMatch) return;
+  const match = matches.find(m => m.id === id);
+  if (!match) return;
+  if (editingMatch && !confirm("Remplacer la modification en cours par ce match ?")) return;
+  const { id: ignored, ...data } = match;
+  editingMatch = { id, teamId: currentProfile.teamId, data: JSON.parse(JSON.stringify(data)) };
+  const fields = { matchDate: "date", matchOpponent: "opponent", matchMap: "map", matchMode: "mode", matchTeamScore: "teamScore", matchEnemyScore: "enemyScore", matchResult: "result", matchVodUrl: "vodUrl", matchNotes: "notes" };
+  for (const [id, field] of Object.entries(fields)) {
+    const el = $(id), value = data[field] ?? "";
+    if (el.tagName === "SELECT" && value && !Array.from(el.options).some(o => o.value === String(value))) {
+      const option = document.createElement("option"); option.value = value; option.textContent = value; el.appendChild(option);
+    }
+    el.value = value;
+  }
+  renderMatchPlayerInputs(true);
+  $("matchPlayersWrap").querySelectorAll("[data-stat-row]").forEach(row => {
+    const stat = data.playerStats?.[row.dataset.uid];
+    row.querySelector('[data-stat="present"]').checked = Boolean(stat);
+    for (const field of ["kills", "headshots", "deaths", "assists"]) row.querySelector(`[data-stat="${field}"]`).value = stat?.[field] ?? 0;
+  });
+  $("roundsWrap").innerHTML = "";
+  for (const round of data.rounds || []) addRoundRow(round);
+  $("addMatchBtn").textContent = "Enregistrer les modifications";
+  $("cancelEditMatchBtn").classList.remove("hidden");
+  $("addRandomMatchBtn")?.classList.add("hidden");
+  setMsg("matchMsg", "Modification du match : corrige les champs, puis enregistre.");
+  switchTab("admin");
+  $("matchDate").scrollIntoView?.({ behavior: "smooth", block: "center" });
+};
+
 async function addMatch() {
-  if (currentProfile.role !== "admin") return;
+  if (currentProfile?.role !== "admin" || savingMatch) return;
   const rounds = collectRounds();
   const playerStats = enrichStatsWithRounds(collectPlayerStats(), rounds);
   if (!Object.keys(playerStats).length) {
@@ -1055,8 +1110,11 @@ async function addMatch() {
   const teamScore = num($("matchTeamScore").value);
   const enemyScore = num($("matchEnemyScore").value);
   const score = `${teamScore}-${enemyScore}`;
+  const edit = editingMatch;
+  savingMatch = true;
+  $("addMatchBtn").disabled = true;
   try {
-    const matchRef = await addDoc(teamCollection("matches"), {
+    const payload = {
       date: $("matchDate").value,
       opponent: $("matchOpponent").value.trim(),
       map: $("matchMap").value.trim(),
@@ -1068,17 +1126,31 @@ async function addMatch() {
       vodUrl: $("matchVodUrl")?.value.trim() || "",
       notes: $("matchNotes").value.trim(),
       playerStats,
-      rounds,
-      createdAt: serverTimestamp(),
-      createdBy: currentUser.uid
-    });
-    await logActivity("match", `Match ajouté : ${$("matchOpponent").value.trim() || "Adversaire"} — ${$("matchMap").value.trim() || "Map"}`, { matchId: matchRef.id });
-    ["matchOpponent", "matchTeamScore", "matchEnemyScore", "matchVodUrl", "matchNotes"].forEach((id) => $(id).value = "");
-    $("roundsWrap").innerHTML = "";
-    renderMatchPlayerInputs(true);
-    setMsg("matchMsg", "Match complet ajouté. Les statistiques sont recalculées automatiquement.");
+      rounds
+    };
+    let matchRef;
+    if (edit) {
+      if (edit.teamId !== currentProfile.teamId) throw new Error("L’équipe a changé. Rouvre le match.");
+      matchRef = teamDoc("matches", edit.id);
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(matchRef);
+        if (!snapshot.exists()) throw new Error("Ce match a été supprimé. Annule la modification.");
+        const latest = snapshot.data();
+        const fingerprint = value => JSON.stringify(Object.keys(value).sort().map(key => [key, value[key]]));
+        if (fingerprint(latest) !== fingerprint(edit.data)) throw new Error("Ce match a été modifié par un autre admin. Annule puis rouvre le match pour récupérer sa version.");
+        transaction.update(matchRef, { ...payload, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
+      });
+    } else {
+      matchRef = await addDoc(teamCollection("matches"), { ...payload, createdAt: serverTimestamp(), createdBy: currentUser.uid });
+    }
+    await logActivity("match", `Match ${edit ? "modifié" : "ajouté"} : ${$("matchOpponent").value.trim() || "Adversaire"} — ${$("matchMap").value.trim() || "Map"}`, { matchId: matchRef.id });
+    resetMatchEditor();
+    setMsg("matchMsg", edit ? "Match modifié. Les statistiques sont recalculées automatiquement." : "Match complet ajouté. Les statistiques sont recalculées automatiquement.");
   } catch (err) {
     setMsg("matchMsg", humanError(err));
+  } finally {
+    savingMatch = false;
+    $("addMatchBtn").disabled = false;
   }
 }
 
@@ -1100,7 +1172,7 @@ function renderMatches() {
         </tbody></table></div>` : `<p class="muted">Aucun round détaillé saisi.</p>`}
       </details>
       ${m.notes ? `<p>${escapeHtml(m.notes)}</p>` : ""}
-      ${currentProfile?.role === "admin" ? `<button class="danger" onclick="window.deleteMatch('${m.id}')">Supprimer</button>` : ""}
+      ${currentProfile?.role === "admin" ? `<button class="secondary" onclick="window.editMatch('${m.id}')">Modifier</button> <button class="danger" onclick="window.deleteMatch('${m.id}')">Supprimer</button>` : ""}
     </div>`;
   }).join("") : `<p class="muted">Aucun match pour le moment.</p>`;
 }
