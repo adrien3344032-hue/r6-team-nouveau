@@ -1,0 +1,216 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function userDoc(uid) {
+      return get(userPath(uid));
+    }
+
+    function hasUser(uid) {
+      return exists(userPath(uid));
+    }
+
+    function isActiveMemberOf(teamId) {
+      return isSignedIn()
+        && hasUser(request.auth.uid)
+        && userDoc(request.auth.uid).data.teamId == teamId
+        && userDoc(request.auth.uid).data.status == "active"
+        && userDoc(request.auth.uid).data.role in ["admin", "player", "viewer"];
+    }
+
+    function isAdminOf(teamId) {
+      return isActiveMemberOf(teamId)
+        && userDoc(request.auth.uid).data.role == "admin";
+    }
+
+    function ownsTeam(teamId, uid) {
+      return exists(/databases/$(database)/documents/teams/$(teamId))
+        && get(/databases/$(database)/documents/teams/$(teamId)).data.ownerUid == uid;
+    }
+
+    function isOwnProfile(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function sameRoleStatusTeam() {
+      return resource.data.teamId == request.resource.data.teamId
+        && resource.data.role == request.resource.data.role
+        && resource.data.status == request.resource.data.status;
+    }
+
+    function becomesNoTeam() {
+      return request.resource.data.role == "none"
+        && request.resource.data.status == "no_team"
+        && request.resource.data.teamId == "";
+    }
+
+    function asksToJoinTeam() {
+      return request.resource.data.role == "pending"
+        && request.resource.data.status == "pending"
+        && request.resource.data.teamId is string
+        && request.resource.data.teamId != ""
+        && exists(/databases/$(database)/documents/teams/$(request.resource.data.teamId));
+    }
+
+    function canSelfAskToJoinTeam() {
+      return asksToJoinTeam()
+        && (
+          resource.data.teamId == ""
+          || resource.data.status in ["no_team", "rejected", "team_deleted"]
+          || resource.data.role in ["none", "rejected"]
+        );
+    }
+
+    match /teams/{teamId} {
+      // Public uniquement pour afficher la liste des équipes existantes.
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isAdminOf(teamId) && request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if isAdminOf(teamId);
+
+      match /availability/{docId} {
+        allow read: if isActiveMemberOf(teamId);
+        function ownAvailabilityKey() {
+          return request.auth.uid.lower().replace("[^a-z0-9_-]", "_");
+        }
+        function isPlayer() {
+          return isActiveMemberOf(teamId) && userDoc(request.auth.uid).data.role == "player";
+        }
+        allow create: if isAdminOf(teamId)
+          || (isPlayer() && request.resource.data.values is map
+            && request.resource.data.values.keys().hasOnly([ownAvailabilityKey()])
+            && request.resource.data.keys().hasOnly(["values", "updatedAt"]));
+        allow update: if isAdminOf(teamId)
+          || (isPlayer() && request.resource.data.values is map
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["values", "updatedAt"])
+            && request.resource.data.values.diff(resource.data.get("values", {})).affectedKeys().hasOnly([ownAvailabilityKey()]));
+        allow delete: if isAdminOf(teamId);
+      }
+
+      match /planning/{docId} {
+        allow read: if isActiveMemberOf(teamId);
+        allow create, update, delete: if isAdminOf(teamId);
+      }
+
+      match /matches/{matchId} {
+        allow read: if isActiveMemberOf(teamId);
+        allow create, update, delete: if isAdminOf(teamId);
+      }
+
+      match /nameClaims/{nameKey} {
+        allow read, create, update, delete: if isAdminOf(teamId);
+      }
+
+      match /strats/{stratId} {
+        allow read: if isActiveMemberOf(teamId);
+        allow create, update: if isAdminOf(teamId)
+          && request.resource.data.get("notes", "") is string
+          && request.resource.data.get("notes", "").size() <= 20000;
+        allow delete: if isAdminOf(teamId);
+      }
+
+      match /activityLog/{logId} {
+        allow read: if isActiveMemberOf(teamId);
+        allow create: if isActiveMemberOf(teamId);
+        allow update: if false;
+        allow delete: if isAdminOf(teamId);
+      }
+    }
+
+    match /users/{userId} {
+      // Un utilisateur lit son profil. Les membres actifs lisent les profils actifs de leur équipe.
+      // Les admins lisent aussi les profils en attente de leur équipe pour gérer les demandes.
+      allow read: if isOwnProfile(userId)
+        || (
+          isSignedIn()
+          && hasUser(request.auth.uid)
+          && userDoc(request.auth.uid).data.status == "active"
+          && userDoc(request.auth.uid).data.teamId == resource.data.teamId
+          && (
+            resource.data.status == "active"
+            || userDoc(request.auth.uid).data.role == "admin"
+          )
+        );
+
+      function identityUnchanged() {
+        return request.resource.data.get("uid", userId) == resource.data.get("uid", userId)
+          && request.resource.data.get("email", "") == resource.data.get("email", "");
+      }
+
+      function ownerKeepsAccess() {
+        return resource.data.get("teamId", "") == ""
+          || !ownsTeam(resource.data.teamId, userId)
+          || (request.resource.data.teamId == resource.data.teamId
+            && request.resource.data.role == "admin"
+            && request.resource.data.status == "active")
+          || (becomesNoTeam() && !existsAfter(/databases/$(database)/documents/teams/$(resource.data.teamId)));
+      }
+
+      allow create: if isOwnProfile(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.email == request.auth.token.email
+        && (
+          (request.resource.data.role == "pending" && request.resource.data.status == "pending")
+          ||
+          (request.resource.data.role == "admin"
+            && request.resource.data.status == "active"
+            && ownsTeam(request.resource.data.teamId, userId))
+        );
+
+      allow update: if identityUnchanged() && ownerKeepsAccess() && ((
+          isOwnProfile(userId)
+          && (
+            (sameRoleStatusTeam() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["updatedAt", "teamName"]))
+            || becomesNoTeam()
+            || canSelfAskToJoinTeam()
+            || (
+              request.resource.data.role == "admin"
+              && request.resource.data.status == "active"
+              && ownsTeam(request.resource.data.teamId, userId)
+            )
+          )
+        )
+        || (
+          isSignedIn()
+          && hasUser(request.auth.uid)
+          && hasUser(userId)
+          && userDoc(request.auth.uid).data.role == "admin"
+          && userDoc(request.auth.uid).data.status == "active"
+          && userDoc(request.auth.uid).data.teamId == resource.data.teamId
+          && (
+            request.resource.data.teamId == resource.data.teamId
+            || becomesNoTeam()
+          )
+        ));
+
+      allow delete: if isOwnProfile(userId) && (resource.data.get("teamId", "") == "" || !ownsTeam(resource.data.teamId, userId));
+    }
+
+    match /teamRequests/{requestId} {
+      allow read: if isSignedIn()
+        && (
+          request.auth.uid == resource.data.uid
+          || isAdminOf(resource.data.teamId)
+        );
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == "pending"
+        && hasUser(request.auth.uid)
+        && userDoc(request.auth.uid).data.role == "pending"
+        && userDoc(request.auth.uid).data.status == "pending"
+        && userDoc(request.auth.uid).data.teamId == request.resource.data.teamId
+        && exists(/databases/$(database)/documents/teams/$(request.resource.data.teamId));
+      allow update: if isAdminOf(resource.data.teamId);
+      allow delete: if false;
+    }
+  }
+}

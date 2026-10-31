@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>R6 Team — Matchs & Disponibilités</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20261031-complet" />
 </head>
 <body>
   <div id="app">
@@ -200,6 +200,7 @@
               <div class="row" id="planningAdminActions">
                 <button id="addPlanningRowBtn" type="button" class="secondary">+ Ajouter une ligne</button>
                 <button id="savePlanningBtn" type="button">Enregistrer le planning</button>
+                <button id="reloadPlanningBtn" type="button" class="secondary">Recharger le planning</button>
                 <button id="clearPlanningBtn" type="button" class="danger">Vider</button>
               </div>
             </div>
@@ -333,8 +334,15 @@
               <button id="closeImageModalBtn" type="button" class="danger">Fermer</button>
             </div>
           </div>
-          <div class="image-modal-stage">
-            <img id="imageModalImg" alt="Stratégie" />
+          <div class="image-modal-content">
+            <div class="image-modal-stage"><img id="imageModalImg" alt="Stratégie" /></div>
+            <aside class="strat-notes-panel">
+              <label for="stratNotesInput">Consignes de la stratégie</label>
+              <p class="muted">Positions, rôles, drones, timings… Les admins modifient le texte ; toute l’équipe peut le consulter.</p>
+              <textarea id="stratNotesInput" rows="14" maxlength="20000" placeholder="Écris ici les consignes liées à cette image…" readonly></textarea>
+              <button id="saveStratNotesBtn" type="button" class="hidden">Enregistrer le texte</button>
+              <p id="stratNotesMsg" class="message" aria-live="polite"></p>
+            </aside>
           </div>
         </div>
 
@@ -461,6 +469,6 @@
   </div>
 
   <script>window.R6_FIREBASE_CONFIG = {apiKey:"AIzaSyBGy9d4d3Wbhv44enQN535hA82um_bkxgw",authDomain:"r6-team-nouveau.firebaseapp.com",projectId:"r6-team-nouveau",storageBucket:"r6-team-nouveau.firebasestorage.app",messagingSenderId:"1083540215251",appId:"1:1083540215251:web:2a6526913e922fae00cb26"};</script>
-  <script type="module" src="app.js?v=20261028-edit-match-save2"></script>
+  <script type="module" src="app.js?v=20261031-complet"></script>
 </body>
 </html>

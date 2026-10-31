@@ -57,6 +57,9 @@ let pendingRequests = [];
 let players = [];
 let matches = [];
 let editingMatch = null;
+let planningVersion = null;
+let openStratImage = null;
+let savingStratNotes = false;
 let savingMatch = false;
 let availability = {};
 let planning = [];
@@ -103,6 +106,7 @@ function bindAuth() {
   $("addStratImageBtn")?.addEventListener("click", () => $("stratImageInput")?.click());
   $("stratImageInput")?.addEventListener("change", handleStratImageUpload);
   $("closeImageModalBtn")?.addEventListener("click", closeImageModal);
+  $("saveStratNotesBtn")?.addEventListener("click", saveStratNotes);
   $("zoomInBtn")?.addEventListener("click", () => setImageZoom(imageZoom + 0.25));
   $("zoomOutBtn")?.addEventListener("click", () => setImageZoom(imageZoom - 0.25));
   $("zoomResetBtn")?.addEventListener("click", () => setImageZoom(1));
@@ -119,6 +123,7 @@ function bindAuth() {
   $("addPlanningRowBtn")?.addEventListener("click", () => addPlanningRow());
   $("savePlanningBtn")?.addEventListener("click", savePlanning);
   $("clearPlanningBtn")?.addEventListener("click", clearPlanning);
+  $("reloadPlanningBtn")?.addEventListener("click", () => { if (confirm("Recharger le planning et abandonner ce brouillon ?")) { renderPlanning(true); setMsg("planningMsg", "Dernier planning rechargé."); } });
   $("statsPeriodFilter")?.addEventListener("change", renderAllStats);
   $("statsModeFilter")?.addEventListener("change", renderAllStats);
   populateAdminSelects();
@@ -226,8 +231,8 @@ async function register() {
   const teamName = $("teamNameInput")?.value.trim();
   const teamIdToJoin = $("teamSelect")?.value || "";
 
-  if (!pseudo) {
-    setMsg("loginMsg", "Entre ton pseudo joueur avant de créer le compte.");
+  if (!pseudo || pseudo.length > 80) {
+    setMsg("loginMsg", "Entre un pseudo joueur de 1 à 80 caractères.");
     return;
   }
   if (mode === "create" && !teamName) {
@@ -330,7 +335,7 @@ async function loadProfile(user) {
   const ref = doc(db, "users", user.uid);
   const snap = await getDoc(ref);
   if (snap.exists()) {
-    currentProfile = { uid: user.uid, ...snap.data() };
+    currentProfile = { ...snap.data(), uid: user.uid };
   } else {
     currentProfile = { uid: user.uid, email: user.email, name: user.displayName || guessName(user.email), role: "pending", status: "pending" };
     await setDoc(ref, { ...currentProfile, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
@@ -378,7 +383,7 @@ function startProfileSubscription(user) {
   clearProfileSubscription();
   profileUnsubscribe = onSnapshot(doc(db, "users", user.uid), (snap) => {
     if (!snap.exists() || !currentUser || currentUser.uid !== user.uid) return;
-    const nextProfile = { uid: user.uid, ...snap.data() };
+    const nextProfile = { ...snap.data(), uid: user.uid };
     const previousTeamId = currentProfile?.teamId || "";
     const previousRole = currentProfile?.role || "";
     const previousStatus = currentProfile?.status || "";
@@ -554,6 +559,8 @@ function teamDoc(collectionName, docId) {
 }
 
 function clearDataSubscriptions() {
+  closeImageModal(true);
+  planningVersion = null;
   resetMatchEditor();
   dataUnsubscribes.forEach((fn) => {
     try { fn(); } catch (_) {}
@@ -581,7 +588,7 @@ function subscribeData() {
     ? query(collection(db, "users"), where("teamId", "==", currentProfile.teamId))
     : query(collection(db, "users"), where("teamId", "==", currentProfile.teamId), where("status", "==", "active"));
   const unsubUsers = onSnapshot(usersQuery, (snap) => {
-    const allUsers = snap.docs.map((d) => ({ id: d.id, uid: d.id, ...d.data() }));
+    const allUsers = snap.docs.map((d) => ({ ...d.data(), id: d.id, uid: d.id }));
     const self = allUsers.find((u) => u.uid === currentUser?.uid);
     if (self && (self.teamId !== currentProfile.teamId || self.status === "no_team" || self.role === "none" || !self.teamId)) {
       currentProfile = { ...currentProfile, ...self };
@@ -640,6 +647,7 @@ function subscribeData() {
 
   const unsubPlanning = onSnapshot(teamDoc("planning", "week"), (snap) => {
     planning = snap.exists() ? (snap.data().items || []) : [];
+    planningVersion = snap.exists() ? JSON.parse(JSON.stringify(snap.data())) : null;
     renderPlanning();
   });
   dataUnsubscribes.push(unsubPlanning);
@@ -654,6 +662,7 @@ function subscribeData() {
   const unsubStrats = onSnapshot(query(teamCollection("strats"), orderBy("createdAt", "asc")), (snap) => {
     strats = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderStrats();
+    syncOpenStratNotes();
   });
   dataUnsubscribes.push(unsubStrats);
 
@@ -828,7 +837,7 @@ function renderMatchPlayerInputs(reset = false) {
     wrap.innerHTML = `<p class="muted">Aucun joueur inscrit. Les joueurs apparaissent après création de compte.</p>`;
     return;
   }
-  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th></tr></thead><tbody>
+  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
     ${matchEditorPlayers().map((p) => {
       const key = safeKey(p.uid);
       return `<tr data-stat-row="${key}" data-uid="${escapeAttr(p.uid)}" data-name="${escapeAttr(p.name || "Joueur")}">
@@ -837,11 +846,12 @@ function renderMatchPlayerInputs(reset = false) {
         <td><input type="number" min="0" value="0" data-stat="kills"></td>
         <td><input type="number" min="0" value="0" data-stat="headshots"></td>
         <td><input type="number" min="0" value="0" data-stat="deaths"></td>
-        <td><input type="number" min="0" value="0" data-stat="assists"></td>
+        <td><input type="number" min="0" step="1" value="0" data-stat="assists"></td>
+        ${["entryKills", "entryDeaths", "plants", "defuses", "clutches"].map(field => `<td><input type="number" min="0" step="1" value="0" data-stat="${field}"></td>`).join("")}
       </tr>`;
     }).join("")}
   </tbody></table>
-  <p class="muted small-note">Plants et defuses sont calculés automatiquement depuis les rounds saisis en dessous.</p>`;
+  <p class="muted small-note">Sans rounds détaillés : saisis les totaux Entry K / D, plants, defuses et clutches ici. Avec des rounds : ces cinq compteurs sont recalculés depuis les rounds uniquement, les totaux manuels sont ignorés. Premier kill et première mort de notre équipe peuvent être renseignés dans un même round.</p>`;
   wrap.querySelectorAll("[data-stat-row]").forEach(row => {
     for (const [field, value] of drafts.get(row.dataset.uid) || []) {
       const el = row.querySelector(`[data-stat="${field}"]`);
@@ -896,15 +906,15 @@ function collectPlayerStats() {
       uid,
       name: row.dataset.name,
       kills: num(row.querySelector('[data-stat="kills"]').value),
-      headshots: Math.min(num(row.querySelector('[data-stat="headshots"]')?.value), num(row.querySelector('[data-stat="kills"]').value)),
+      headshots: num(row.querySelector('[data-stat="headshots"]')?.value),
       deaths: num(row.querySelector('[data-stat="deaths"]').value),
       assists: num(row.querySelector('[data-stat="assists"]').value),
       // Calculés automatiquement depuis les rounds (plantUid / defuseUid).
-      plants: 0,
-      defuses: 0,
-      entryKills: 0,
-      entryDeaths: 0,
-      clutches: 0
+      plants: num(row.querySelector('[data-stat="plants"]')?.value),
+      defuses: num(row.querySelector('[data-stat="defuses"]')?.value),
+      entryKills: num(row.querySelector('[data-stat="entryKills"]')?.value),
+      entryDeaths: num(row.querySelector('[data-stat="entryDeaths"]')?.value),
+      clutches: num(row.querySelector('[data-stat="clutches"]')?.value)
     };
   });
   return out;
@@ -929,14 +939,62 @@ function collectRounds() {
 }
 
 function enrichStatsWithRounds(playerStats, rounds) {
-  for (const r of rounds) {
-    if (r.firstKillUid && playerStats[r.firstKillUid]) playerStats[r.firstKillUid].entryKills += 1;
-    if (r.firstDeathUid && playerStats[r.firstDeathUid]) playerStats[r.firstDeathUid].entryDeaths += 1;
-    if (r.plantUid && playerStats[r.plantUid]) playerStats[r.plantUid].plants += 1;
-    if (r.defuseUid && playerStats[r.defuseUid]) playerStats[r.defuseUid].defuses += 1;
-    if (r.clutchUid && playerStats[r.clutchUid]) playerStats[r.clutchUid].clutches += 1;
+  if (!rounds.length) return playerStats;
+  for (const stat of Object.values(playerStats)) {
+    for (const field of ["entryKills", "entryDeaths", "plants", "defuses", "clutches"]) stat[field] = 0;
+  }
+  for (const round of rounds) {
+    for (const [event, counter] of [["firstKillUid", "entryKills"], ["firstDeathUid", "entryDeaths"], ["plantUid", "plants"], ["defuseUid", "defuses"], ["clutchUid", "clutches"]]) {
+      if (round[event] && playerStats[round[event]]) playerStats[round[event]][counter] += 1;
+    }
   }
   return playerStats;
+}
+
+function localDateString(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function safeVodUrl(value) {
+  const text = String(value || "").trim();
+  if (!/^https?:\/\//i.test(text)) return "";
+  try { const url = new URL(text); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : ""; } catch { return ""; }
+}
+
+function validateMatchInput(stats, rounds) {
+  const date = $("matchDate").value;
+  const parsed = new Date(`${date}T12:00:00`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(parsed.getTime()) || localDateString(parsed) !== date) return "Renseigne une date de match valide.";
+  if (date > localDateString()) return "La date du match ne peut pas être dans le futur.";
+  const rawTeam = $("matchTeamScore").value, rawEnemy = $("matchEnemyScore").value;
+  const team = Number(rawTeam), enemy = Number(rawEnemy);
+  if (rawTeam === "" || rawEnemy === "" || !Number.isInteger(team) || !Number.isInteger(enemy) || team < 0 || enemy < 0 || team + enemy === 0) return "Renseigne les deux scores avec des entiers positifs ou nuls (au moins un round).";
+  const expected = team > enemy ? "Victoire" : team < enemy ? "Défaite" : "Nul";
+  if ($("matchResult").value !== expected) return `Le score correspond à ${expected.toLowerCase()} : corrige le résultat ou les scores.`;
+  const vod = $("matchVodUrl").value.trim();
+  if (vod && !safeVodUrl(vod)) return "Le lien VOD doit être une adresse HTTP ou HTTPS valide, sans identifiants.";
+  const seen = new Set();
+  for (const round of rounds) {
+    if (!Number.isInteger(round.number) || round.number < 1 || round.number > team + enemy || seen.has(round.number)) return "Les numéros de rounds doivent être entiers, uniques et compris dans le score total.";
+    seen.add(round.number);
+    for (const event of ["firstKillUid", "firstDeathUid", "plantUid", "defuseUid", "clutchUid"]) {
+      if (round[event] && !stats[round[event]]) return `Round ${round.number} : le joueur sélectionné doit être coché présent.`;
+    }
+  }
+  if (rounds.filter(r => r.result === "Gagné").length > team || rounds.filter(r => r.result === "Perdu").length > enemy) return "Les résultats des rounds contredisent le score. Corrige les rounds ou les scores.";
+  let entriesK = 0, entriesD = 0;
+  for (const stat of Object.values(stats)) {
+    for (const field of ["kills", "headshots", "deaths", "assists", "entryKills", "entryDeaths", "plants", "defuses", "clutches"]) {
+      if (!Number.isInteger(stat[field]) || stat[field] < 0) return "Les statistiques doivent être des entiers positifs ou nuls.";
+    }
+    if (stat.headshots > stat.kills) return `Les headshots de ${stat.name} dépassent ses kills.`;
+    if (stat.deaths > team + enemy) return `Les morts de ${stat.name} dépassent le nombre de rounds.`;
+    if (stat.entryKills > stat.kills || stat.entryDeaths > stat.deaths) return `Les Entry de ${stat.name} dépassent ses kills ou ses morts.`;
+    if ([stat.plants, stat.defuses, stat.clutches].some(v => v > team + enemy)) return `Un compteur de ${stat.name} dépasse le nombre de rounds.`;
+    entriesK += stat.entryKills; entriesD += stat.entryDeaths;
+  }
+  if (entriesK > team + enemy || entriesD > team + enemy) return "Le total des premiers kills ou des premières morts de l’équipe dépasse le nombre de rounds.";
+  return "";
 }
 
 
@@ -1015,10 +1073,14 @@ async function addRandomMatch() {
   }
 
   enrichStatsWithRounds(playerStats, rounds);
+  for (const stat of Object.values(playerStats)) {
+    stat.kills = Math.max(stat.kills, stat.entryKills);
+    stat.deaths = Math.max(stat.deaths, stat.entryDeaths);
+  }
 
   try {
     const matchRef = await addDoc(teamCollection("matches"), {
-      date: new Date().toISOString().slice(0, 10),
+      date: localDateString(),
       opponent: pick(SIM_OPPONENTS),
       map: matchMap,
       mode,
@@ -1098,7 +1160,7 @@ window.editMatch = (id) => {
   $("matchPlayersWrap").querySelectorAll("[data-stat-row]").forEach(row => {
     const stat = data.playerStats?.[row.dataset.uid];
     row.querySelector('[data-stat="present"]').checked = Boolean(stat);
-    for (const field of ["kills", "headshots", "deaths", "assists"]) row.querySelector(`[data-stat="${field}"]`).value = stat?.[field] ?? 0;
+    for (const field of ["kills", "headshots", "deaths", "assists", "entryKills", "entryDeaths", "plants", "defuses", "clutches"]) row.querySelector(`[data-stat="${field}"]`).value = stat?.[field] ?? 0;
   });
   $("roundsWrap").innerHTML = "";
   for (const round of data.rounds || []) addRoundRow(round);
@@ -1121,6 +1183,8 @@ async function addMatch() {
   const teamScore = num($("matchTeamScore").value);
   const enemyScore = num($("matchEnemyScore").value);
   const score = `${teamScore}-${enemyScore}`;
+  const invalid = validateMatchInput(playerStats, rounds);
+  if (invalid) { setMsg("matchMsg", invalid); return; }
   const edit = editingMatch;
   savingMatch = true;
   $("addMatchBtn").disabled = true;
@@ -1134,7 +1198,7 @@ async function addMatch() {
       enemyScore,
       score,
       result: $("matchResult").value,
-      vodUrl: $("matchVodUrl")?.value.trim() || "",
+      vodUrl: safeVodUrl($("matchVodUrl")?.value),
       notes: $("matchNotes").value.trim(),
       playerStats,
       rounds
@@ -1171,7 +1235,7 @@ function renderMatches() {
     return `<div class="item match-card">
       <div class="item-head"><strong>${escapeHtml(m.date || "Sans date")} — ${escapeHtml(m.opponent || "Adversaire")}</strong><span>${escapeHtml(m.result || "")} ${escapeHtml(m.score || "")}</span></div>
       <p class="muted">Map : ${escapeHtml(m.map || "-")} ${m.mode ? `— ${escapeHtml(m.mode)}` : ""}</p>
-      ${m.vodUrl ? `<p><a class="vod-link" href="${escapeAttr(m.vodUrl)}" target="_blank" rel="noopener">Ouvrir la VOD / vidéo</a></p>` : ""}
+      ${safeVodUrl(m.vodUrl) ? `<p><a class="vod-link" href="${escapeAttr(safeVodUrl(m.vodUrl))}" target="_blank" rel="noopener">Ouvrir la VOD / vidéo</a></p>` : ""}
       <details>
         <summary>Voir les stats du match</summary>
         <div class="table-wrap"><table><thead><tr><th>Joueur</th><th>K</th><th>HS</th><th>HS%</th><th>D</th><th>A</th><th>K/D</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
@@ -1198,7 +1262,7 @@ function filteredMatches() {
     if (filter === "all") return true;
     if (!m.date) return false;
     const d = new Date(`${m.date}T00:00:00`);
-    return Number.isFinite(d.getTime()) && d >= limit;
+    return Number.isFinite(d.getTime()) && d >= limit && m.date <= localDateString();
   });
 }
 
@@ -1218,13 +1282,15 @@ function calculateAggregates() {
   const sourceMatches = filteredMatches();
   const agg = {};
   for (const p of players) {
-    agg[p.uid] = { uid: p.uid, name: p.name || "Joueur", matches: 0, roundsPlayed: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
+    agg[p.uid] = { uid: p.uid, name: p.name || "Joueur", matches: 0, roundsPlayed: 0, kprKills: 0, roundsMissing: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
   }
   for (const m of sourceMatches) {
     for (const [uid, s] of Object.entries(m.playerStats || {})) {
-      if (!agg[uid]) agg[uid] = { uid, name: s.name || nameByUid(uid), matches: 0, roundsPlayed: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
+      if (!agg[uid]) agg[uid] = { uid, name: s.name || nameByUid(uid), matches: 0, roundsPlayed: 0, kprKills: 0, roundsMissing: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
       agg[uid].matches += 1;
-      agg[uid].roundsPlayed += matchRoundCount(m);
+      const roundCount = matchRoundCount(m);
+      agg[uid].roundsPlayed += roundCount;
+      if (roundCount > 0) agg[uid].kprKills += num(s.kills); else agg[uid].roundsMissing += 1;
       if (m.result === "Victoire") agg[uid].wins += 1;
       ["kills", "headshots", "deaths", "assists", "plants", "defuses", "entryKills", "entryDeaths", "clutches"].forEach((k) => agg[uid][k] += num(s[k]));
     }
@@ -1240,10 +1306,10 @@ function renderStatsTable() {
     wrap.innerHTML = `<p class="muted">Aucun joueur à afficher.</p>`;
     return;
   }
-  wrap.innerHTML = `<table><thead><tr><th>Joueur</th><th>MJ</th><th>Win</th><th>K</th><th>HS</th><th>HS%</th><th>D</th><th>A</th><th>K/D</th><th>KPR</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
+  wrap.innerHTML = `${rows.some(r => r.roundsMissing) ? `<p class="muted">* KPR partiel : seuls les matchs dont le nombre de rounds est connu sont utilisés. Complète les scores des anciens matchs.</p>` : ""}<table><thead><tr><th>Joueur</th><th>MJ</th><th>Win</th><th>K</th><th>HS</th><th>HS%</th><th>D</th><th>A</th><th>K/D</th><th>KPR</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
     ${rows.map((r) => {
       const winRate = r.matches ? Math.round((r.wins / r.matches) * 100) : 0;
-      const kpr = r.roundsPlayed ? (r.kills / r.roundsPlayed).toFixed(1) : "—";
+      const kpr = r.roundsPlayed ? (r.kprKills / r.roundsPlayed).toFixed(1) + (r.roundsMissing ? "*" : "") : "—";
       return `<tr><td><strong>${escapeHtml(r.name)}</strong></td><td>${r.matches}</td><td>${winRate}%</td><td>${r.kills}</td><td>${r.headshots}</td><td>${hsPercent(r.headshots, r.kills)}</td><td>${r.deaths}</td><td>${r.assists}</td><td>${kd(r.kills, r.deaths)}</td><td>${kpr}</td><td>${r.entryKills}</td><td>${r.entryDeaths}</td><td>${r.plants}</td><td>${r.defuses}</td><td>${r.clutches}</td></tr>`;
     }).join("")}
   </tbody></table>`;
@@ -1269,7 +1335,7 @@ function renderRadarCharts(rows) {
 
   const prepared = rows.map((r) => {
     const kdValue = Number(kd(r.kills, r.deaths));
-    const kpr = r.matches ? r.kills / r.matches : 0;
+    const kpr = r.roundsPlayed ? r.kprKills / r.roundsPlayed : 0;
     const winRate = r.matches ? (r.wins / r.matches) * 100 : 0;
     const entryDiff = r.matches ? (r.entryKills - r.entryDeaths) / r.matches : 0;
     const objective = r.matches ? (r.plants + r.defuses) / r.matches : 0;
@@ -1352,10 +1418,19 @@ function renderBarChart(id, data, suffix = "") {
   const max = Math.max(1, ...cleaned.map((d) => Math.abs(Number(d.value))));
   el.innerHTML = cleaned.map((d) => {
     const value = Number(d.value);
-    const width = Math.max(4, Math.round((Math.abs(value) / max) * 100));
-    const display = suffix === "x" ? value.toFixed(2) : `${value}${suffix}`;
-    return `<div class="chart-row"><div class="chart-label">${escapeHtml(d.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%"></div></div><div class="chart-value">${escapeHtml(display)}</div></div>`;
+    const width = value === 0 ? 0 : Math.max(4, Math.round((Math.abs(value) / max) * 100));
+    const display = suffix === "x" ? value.toFixed(2) : suffix === "diff" ? `${value > 0 ? "+" : ""}${value}` : `${value}${suffix}`;
+    return `<div class="chart-row"><div class="chart-label">${escapeHtml(d.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%;${suffix === "diff" ? `background:${value < 0 ? "#dc4444" : "#238b57"}` : ""}"></div></div><div class="chart-value">${escapeHtml(display)}</div></div>`;
   }).join("");
+}
+
+function statsPlayerName(uid) {
+  const current = players.find(p => p.uid === uid);
+  if (current) return current.name || "Joueur";
+  for (const match of [...filteredMatches()].sort((a,b) => String(b.date).localeCompare(String(a.date)))) {
+    if (match.playerStats?.[uid]?.name) return match.playerStats[uid].name;
+  }
+  return "Ancien joueur";
 }
 
 function renderMapStats() {
@@ -1393,14 +1468,13 @@ function renderMapStats() {
     row.roundsWon += num(m.teamScore);
     row.roundsLost += num(m.enemyScore);
 
-    for (const s of Object.values(m.playerStats || {})) {
+    for (const [uid, s] of Object.entries(m.playerStats || {})) {
       row.plants += num(s.plants);
       row.defuses += num(s.defuses);
       row.clutches += num(s.clutches);
       row.entryKills += num(s.entryKills);
       row.entryDeaths += num(s.entryDeaths);
-      const name = s.name || nameByUid(s.uid) || "Joueur";
-      row.playerKills[name] = (row.playerKills[name] || 0) + num(s.kills);
+      row.playerKills[uid] = (row.playerKills[uid] || 0) + num(s.kills);
     }
 
     for (const r of Array.isArray(m.rounds) ? m.rounds : []) {
@@ -1427,7 +1501,7 @@ function renderMapStats() {
       const defenseRate = r.defensePlayed ? `${Math.round((r.defenseWon / r.defensePlayed) * 100)}%` : "-";
       const entryDiff = r.entryKills - r.entryDeaths;
       const top = Object.entries(r.playerKills).sort((a, b) => b[1] - a[1])[0];
-      return `<tr><td class="map-name"><strong>${escapeHtml(r.map)}</strong></td><td>${r.matches}</td><td>${winRate}%</td><td>${r.wins}-${r.losses}-${r.draws}</td><td>${r.roundsWon}-${r.roundsLost}</td><td class="${roundDiff >= 0 ? "positive" : "negative"}">${roundDiff > 0 ? "+" : ""}${roundDiff}</td><td>${attackRate}</td><td>${defenseRate}</td><td>${r.plants}</td><td>${r.defuses}</td><td>${r.clutches}</td><td class="${entryDiff >= 0 ? "positive" : "negative"}">${entryDiff > 0 ? "+" : ""}${entryDiff}</td><td>${top ? `${escapeHtml(top[0])} (${top[1]})` : "-"}</td></tr>`;
+      return `<tr><td class="map-name"><strong>${escapeHtml(r.map)}</strong></td><td>${r.matches}</td><td>${winRate}%</td><td>${r.wins}-${r.losses}-${r.draws}</td><td>${r.roundsWon}-${r.roundsLost}</td><td class="${roundDiff >= 0 ? "positive" : "negative"}">${roundDiff > 0 ? "+" : ""}${roundDiff}</td><td>${attackRate}</td><td>${defenseRate}</td><td>${r.plants}</td><td>${r.defuses}</td><td>${r.clutches}</td><td class="${entryDiff >= 0 ? "positive" : "negative"}">${entryDiff > 0 ? "+" : ""}${entryDiff}</td><td>${top ? `${escapeHtml(statsPlayerName(top[0]))} (${top[1]})` : "-"}</td></tr>`;
     }).join("")}
   </tbody></table>`;
 }
@@ -1447,6 +1521,7 @@ function renderPlanning(force = false) {
     const remote = planningSignature(planning);
     if (local === remote) {
       wrap.dataset.planningBaseline = remote;
+      wrap.dataset.planningVersion = matchFingerprint(planningVersion);
       return;
     }
     if (local !== wrap.dataset.planningBaseline) {
@@ -1456,6 +1531,7 @@ function renderPlanning(force = false) {
   }
   wrap.dataset.planningContext = context;
   wrap.dataset.planningBaseline = planningSignature(planning);
+  wrap.dataset.planningVersion = matchFingerprint(planningVersion);
   $("planningAdminActions")?.classList.toggle("hidden", !isAdmin);
   if (isAdmin) {
     if (!planning.length) {
@@ -1534,9 +1610,13 @@ function planningCardHtml(item) {
 }
 
 function addPlanningRow(item = {}) {
+  const draftVersion = $("planningWrap")?.dataset.planningVersion;
+  const draftBaseline = $("planningWrap")?.dataset.planningBaseline;
   planning = readPlanningFromDom();
   planning.push({ day: item.day || days[0], time: item.time || "20:30", type: item.type || "Scrim", title: item.title || "", map: item.map || "", notes: item.notes || "" });
   renderPlanning(true);
+  if (draftVersion !== undefined) $("planningWrap").dataset.planningVersion = draftVersion;
+  if (draftBaseline !== undefined) $("planningWrap").dataset.planningBaseline = draftBaseline;
 }
 
 function readPlanningFromDom() {
@@ -1552,7 +1632,14 @@ async function savePlanning() {
   if (currentProfile?.role !== "admin") return;
   try {
     const items = readPlanningFromDom().sort((a, b) => days.indexOf(a.day) - days.indexOf(b.day) || String(a.time).localeCompare(String(b.time)));
-    await setDoc(teamDoc("planning", "week"), { items, updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
+    const ref = teamDoc("planning", "week");
+    const expected = $("planningWrap").dataset.planningVersion;
+    await runTransaction(db, async transaction => {
+      const latest = await transaction.get(ref);
+      const version = latest.exists() ? latest.data() : null;
+      if (expected !== undefined && matchFingerprint(version) !== expected) throw new Error("Le planning a changé depuis ton brouillon. Tes modifications sont conservées. Recharge le planning avant de réessayer.");
+      transaction.set(ref, { items, updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
+    });
     await logActivity("planning", `Planning mis à jour (${items.length} ligne${items.length > 1 ? "s" : ""})`);
     setMsg("planningMsg", "Planning enregistré. Les joueurs le voient directement.");
   } catch (err) {
@@ -1564,7 +1651,13 @@ async function clearPlanning() {
   if (currentProfile?.role !== "admin") return;
   if (!confirm("Vider le planning de la semaine ?")) return;
   try {
-    await setDoc(teamDoc("planning", "week"), { items: [], updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
+    const ref = teamDoc("planning", "week");
+    const expected = $("planningWrap").dataset.planningVersion;
+    await runTransaction(db, async transaction => {
+      const snap = await transaction.get(ref);
+      if (expected !== undefined && matchFingerprint(snap.exists() ? snap.data() : null) !== expected) throw new Error("Le planning a changé. Recharge-le avant de le vider.");
+      transaction.set(ref, { items: [], updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
+    });
     planning = [];
     renderPlanning(true);
     await logActivity("planning", "Planning vidé");
@@ -1572,6 +1665,50 @@ async function clearPlanning() {
   } catch (err) {
     setMsg("planningMsg", humanError(err));
   }
+}
+
+function overallPlayerScores(rows) {
+  const complete = rows.filter(r => r.matches > 0 && r.roundsPlayed > 0 && r.roundsMissing === 0);
+  const maxRounds = Math.max(0, ...complete.map(r => r.roundsPlayed));
+  const minRounds = Math.max(1, Math.ceil(maxRounds / 2));
+  const eligible = complete.filter(r => r.roundsPlayed >= minRounds);
+  const criteria = [
+    [20, r => Number(kd(r.kills, r.deaths))],
+    [20, r => r.kprKills / r.roundsPlayed],
+    [15, r => r.assists / r.roundsPlayed],
+    [15, r => (r.entryKills - r.entryDeaths) / r.roundsPlayed],
+    [10, r => (r.plants + r.defuses) / r.roundsPlayed],
+    [10, r => r.clutches / r.roundsPlayed],
+    [5, r => hsPercentValue(r.headshots, r.kills)],
+    [5, r => r.wins / r.matches]
+  ];
+  const bounds = criteria.map(([,get]) => {
+    const values = eligible.map(get);
+    return [Math.min(...values), Math.max(...values)];
+  });
+  const scores = eligible.map(row => {
+    const weighted = criteria.reduce((sum, [weight, get], index) => {
+      const [min,max] = bounds[index];
+      const relative = max === min ? 0.5 : (get(row) - min) / (max - min);
+      return sum + weight * relative;
+    }, 0);
+    const reliability = row.roundsPlayed / (row.roundsPlayed + 24);
+    const score = Math.round((50 + (weighted - 50) * reliability) * 10) / 10;
+    return { ...row, score };
+  }).sort((a,b) => b.score - a.score || String(a.name).localeCompare(String(b.name), "fr"));
+  return { scores, minRounds };
+}
+
+function overallRankingHtml(rows) {
+  const {scores,minRounds} = overallPlayerScores(rows);
+  const leaders = scores.filter(row => row.score === scores[0]?.score);
+  const winner = leaders.length ? leaders.map(row => escapeHtml(row.name)).join(" / ") : "Données insuffisantes";
+  return `<section class="overall-ranking">
+    <div class="ranking-card overall-winner"><span>🏆 Meilleur joueur${leaders.length > 1 ? " — ex æquo" : ""}</span><strong>${winner}</strong><em>${leaders.length ? `${leaders[0].score.toFixed(1)} / 100` : "Complète les scores des matchs"}</em></div>
+    <p class="muted">Score comparatif basé sur les données saisies, pour la période et le mode sélectionnés. ${scores.some(r => r.matches < 3) ? "Classement provisoire : moins de 3 matchs pour certains joueurs." : ""}</p>
+    ${scores.length ? `<div class="table-wrap"><table><thead><tr><th>Joueur</th><th>Score / 100</th><th>Matchs</th><th>Rounds</th></tr></thead><tbody>${scores.map(row => `<tr><td>${escapeHtml(row.name)}</td><td>${row.score.toFixed(1)}</td><td>${row.matches}</td><td>${row.roundsPlayed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    <details><summary>Comment est choisi le meilleur joueur ?</summary><p>K/D 20 %, KPR 20 %, assists par round 15 %, différence premiers kills / premières morts par round 15 %, plants + defuses par round 10 %, clutches par round 10 %, HS% 5 %, victoires 5 %.</p><p>Chaque critère est comparé aux autres joueurs éligibles (minimum = 0, maximum = 100 ; égalité = 50). Le score est rapproché de 50 quand le volume est faible : 50 + (score brut − 50) × rounds / (rounds + 24).</p><p>Il faut au moins ${minRounds} round(s), soit la moitié du maximum joué sur cette sélection, et un nombre de rounds connu pour tous ses matchs. Les autres joueurs restent visibles dans les statistiques. Les rounds non renseignés ne permettent pas de deviner les assists, Entry ou objectifs manquants : la qualité de la saisie influence le score. Ce score n’est pas une note officielle du jeu.</p></details>
+  </section>`;
 }
 
 function renderRanking() {
@@ -1587,7 +1724,7 @@ function renderRanking() {
     const top = sorted[0];
     return `<div class="ranking-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(top.name)}</strong><em>${escapeHtml(formatter(scorer(top)))}</em></div>`;
   };
-  wrap.innerHTML = [
+  wrap.innerHTML = overallRankingHtml(rows) + [
     best("Meilleur K/D", (r) => Number(kd(r.kills, r.deaths)), (v) => v.toFixed(2)),
     best("Plus de kills", (r) => r.kills, (v) => `${v} K`),
     best("Meilleur HS%", (r) => hsPercentValue(r.headshots, r.kills), (v) => `${Math.round(v)}%`),
@@ -1644,6 +1781,7 @@ async function deleteCurrentTeam() {
     const matchesSnap = await getDocs(collection(db, "teams", teamId, "matches"));
     const logSnap = await getDocs(collection(db, "teams", teamId, "activityLog"));
     const stratSnap = await getDocs(collection(db, "teams", teamId, "strats"));
+    const claimsSnap = await getDocs(collection(db, "teams", teamId, "nameClaims"));
 
     let batch = writeBatch(db);
     let count = 0;
@@ -1669,6 +1807,7 @@ async function deleteCurrentTeam() {
     for (const m of matchesSnap.docs) await addDelete(m.ref);
     for (const l of logSnap.docs) await addDelete(l.ref);
     for (const st of stratSnap.docs) await addDelete(st.ref);
+    for (const claim of claimsSnap.docs) await addDelete(claim.ref);
     // Commit resource cleanup before removing the administrator or the team.
     if (count > 0) await batch.commit();
     const finalBatch = writeBatch(db);
@@ -1683,6 +1822,39 @@ async function deleteCurrentTeam() {
   } catch (err) {
     alert(humanError(err));
   }
+}
+
+async function reserveAndUpdateMember(uid, name, changes, requestId = "") {
+  if (!name.trim() || name.length > 80) throw new Error("Le pseudo doit contenir de 1 à 80 caractères.");
+  const teamId = currentProfile.teamId;
+  const userRef = doc(db, "users", uid);
+  const claimRef = doc(db, "teams", teamId, "nameClaims", nameClaimKey(name));
+  const requestRef = requestId ? doc(db, "teamRequests", requestId) : null;
+  await runTransaction(db, async transaction => {
+    const userSnap = await transaction.get(userRef);
+    const claimSnap = await transaction.get(claimRef);
+    if (!userSnap.exists() || userSnap.data().teamId !== teamId) throw new Error("Le compte a changé d’équipe. Recharge la liste.");
+    if (claimSnap.exists() && claimSnap.data().uid !== uid) {
+      const other = await transaction.get(doc(db, "users", claimSnap.data().uid));
+      if (other.exists() && other.data().teamId === teamId && ["admin", "player", "viewer"].includes(other.data().role) && nameClaimKey(other.data().name || "") === nameClaimKey(name)) throw new Error("Ce pseudo vient d’être utilisé par un autre membre.");
+    }
+    const member = userSnap.data();
+    if (member.role === "admin" && changes.role && changes.role !== "admin") {
+      const teamSnap = await transaction.get(doc(db, "teams", teamId));
+      if (teamSnap.exists() && teamSnap.data().ownerUid === uid) throw new Error("Le propriétaire doit conserver son rôle administrateur.");
+    }
+    transaction.set(claimRef, { uid, name, updatedAt: serverTimestamp() });
+    transaction.set(userRef, { ...changes, nameKey: nameClaimKey(name) }, { merge: true });
+    if (requestRef) transaction.set(requestRef, { status: "accepted", handledBy: currentUser.uid, handledAt: serverTimestamp() }, { merge: true });
+  });
+}
+
+function nameClaimKey(name) {
+  return encodeURIComponent(String(name).normalize("NFKC").trim().toLowerCase());
+}
+
+function duplicatePseudo(name, excludeUid) {
+  return registeredUsers.some(user => user.uid !== excludeUid && ["admin", "player", "viewer"].includes(user.role) && nameClaimKey(user.name || "") === nameClaimKey(name));
 }
 
 async function savePlayer() {
@@ -1701,8 +1873,14 @@ async function savePlayer() {
     return;
   }
 
+  const targetUid = account.uid || account.id;
+  if (!["admin", "player", "viewer"].includes(role)) { setMsg("playerMsg", "Rôle invalide."); return; }
+  if (duplicatePseudo(name, targetUid)) { setMsg("playerMsg", "Ce pseudo est déjà utilisé dans l’équipe."); return; }
+  if (role !== "admin" && (targetUid === currentTeam?.ownerUid || (account.role === "admin" && registeredUsers.filter(u => u.role === "admin" && u.status !== "no_team").length <= 1))) {
+    setMsg("playerMsg", "Le propriétaire et le dernier administrateur doivent conserver leurs droits admin."); return;
+  }
   try {
-    await setDoc(doc(db, "users", account.uid || account.id), { name, role, updatedAt: serverTimestamp() }, { merge: true });
+    await reserveAndUpdateMember(targetUid, name, { name, role, updatedAt: serverTimestamp() });
     await logActivity("user", `Compte mis à jour : ${name} (${roleLabel(role)})`, { targetUid: account.uid || account.id });
     setMsg("playerMsg", "Compte mis à jour.");
     ["newPlayerName", "newPlayerEmail"].forEach((id) => $(id).value = "");
@@ -1757,23 +1935,24 @@ window.approveAccess = async (uid, role) => {
   const duplicateName = registeredUsers.some((u) => {
     if (u.uid === uid) return false;
     if (!["admin", "player", "viewer"].includes(u.role || "")) return false;
-    return String(u.name || "").trim().toLowerCase() === String(finalName).trim().toLowerCase();
+    return nameClaimKey(u.name || "") === nameClaimKey(finalName);
   });
   if (duplicateName) {
     alert(`Le pseudo "${finalName}" est déjà utilisé dans cette équipe. Demande au joueur de recréer son compte avec un autre pseudo, ou modifie un des pseudos avant d’accepter.`);
     return;
   }
 
-  await setDoc(userRef, {
+  try {
+  await reserveAndUpdateMember(uid, finalName, {
     name: finalName,
     role,
     status: "active",
     teamId: currentProfile.teamId,
     teamName: currentTeam?.name || currentProfile.teamName || "Équipe",
     updatedAt: serverTimestamp()
-  }, { merge: true });
-  if (req?.id) await setDoc(doc(db, "teamRequests", req.id), { status: "accepted", handledBy: currentUser.uid, handledAt: serverTimestamp() }, { merge: true });
+  }, req?.id || "");
   await logActivity("user", `Demande acceptée : ${finalName} (${roleLabel(role)})`, { targetUid: uid });
+  } catch (err) { setMsg("playerMsg", humanError(err)); alert(humanError(err)); }
 };
 
 window.rejectAccess = async (uid) => {
@@ -1787,7 +1966,7 @@ window.rejectAccess = async (uid) => {
 
 
 function notificationStorageKey() {
-  return `r6_notifications_seen_${currentProfile?.teamId || "global"}`;
+  return `r6_notifications_seen_${currentUser?.uid || "anonymous"}_${currentProfile?.teamId || "global"}`;
 }
 
 function getNotificationSeenAt() {
@@ -1904,19 +2083,73 @@ window.openStratFolder = (id) => {
   renderStrats();
 };
 
+function stratNotesDirty() {
+  return Boolean(openStratImage && $("stratNotesInput")?.value !== openStratImage.notes);
+}
+
+function syncOpenStratNotes() {
+  if (!openStratImage) return;
+  const item = stratById(openStratImage.id);
+  if (!item) { closeImageModal(true); return; }
+  const notes = String(item.notes || "");
+  if (!stratNotesDirty()) {
+    $("stratNotesInput").value = notes;
+    openStratImage.notes = notes;
+  } else if (notes !== openStratImage.notes) {
+    setMsg("stratNotesMsg", "Le texte a changé ailleurs. Ton brouillon est conservé. Ferme puis rouvre l’image pour récupérer la version publiée.");
+  }
+  $("stratNotesInput").readOnly = currentProfile?.role !== "admin";
+  $("saveStratNotesBtn").classList.toggle("hidden", currentProfile?.role !== "admin");
+}
+
 window.openStratImage = (id) => {
+  if (savingStratNotes) return;
   const item = stratById(id);
   if (!item?.imageData) return;
+  if (stratNotesDirty() && !confirm("Abandonner le texte non enregistré pour ouvrir cette image ?")) return;
+  openStratImage = { id, teamId: currentProfile.teamId, notes: String(item.notes || "") };
   $("imageModalTitle").textContent = item.name || "Image";
   $("imageModalImg").src = item.imageData;
-  imageZoom = 1;
+  $("stratNotesInput").value = openStratImage.notes;
+  setMsg("stratNotesMsg", "");
+  syncOpenStratNotes();
   setImageZoom(1);
   $("imageModal")?.classList.remove("hidden");
 };
 
-function closeImageModal() {
+async function saveStratNotes() {
+  if (currentProfile?.role !== "admin" || !openStratImage || savingStratNotes) return;
+  const context = { ...openStratImage };
+  const notes = $("stratNotesInput").value;
+  if (notes.length > 20000) { setMsg("stratNotesMsg", "Le texte est limité à 20 000 caractères."); return; }
+  savingStratNotes = true;
+  $("saveStratNotesBtn").disabled = true;
+  try {
+    if (currentProfile.teamId !== context.teamId) throw new Error("L’équipe a changé. Rouvre l’image.");
+    const ref = doc(db, "teams", context.teamId, "strats", context.id);
+    await runTransaction(db, async transaction => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) throw new Error("Cette image a été supprimée.");
+      if (String(snap.data().notes || "") !== context.notes) throw new Error("Le texte a été modifié ailleurs. Ton brouillon est conservé ; ferme puis rouvre l’image pour récupérer la dernière version.");
+      transaction.update(ref, { notes, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
+    });
+    if (openStratImage?.id === context.id && openStratImage.teamId === context.teamId) {
+      openStratImage.notes = notes;
+      setMsg("stratNotesMsg", "Texte enregistré et partagé avec l’équipe.");
+    }
+    await logActivity("strat", "Texte de stratégie mis à jour");
+  } catch (err) { setMsg("stratNotesMsg", humanError(err)); }
+  finally { savingStratNotes = false; $("saveStratNotesBtn").disabled = false; }
+}
+
+function closeImageModal(force = false) {
+  // A click event is not a force flag.
+  if (force !== true && savingStratNotes) return;
+  if (force !== true && stratNotesDirty() && !confirm("Fermer et abandonner le texte non enregistré ?")) return;
   $("imageModal")?.classList.add("hidden");
   if ($("imageModalImg")) $("imageModalImg").src = "";
+  if ($("stratNotesInput")) $("stratNotesInput").value = "";
+  openStratImage = null;
 }
 
 function setImageZoom(value) {
@@ -1955,7 +2188,9 @@ async function handleStratImageUpload(event) {
     return;
   }
   const defaultName = file.name.replace(/\.[^.]+$/, "");
-  const name = prompt("Nom de l’image ? Exemple : Top, Mid, Sous-sol, RDC", defaultName) || defaultName;
+  const answer = prompt("Nom de l’image ? Exemple : Top, Mid, Sous-sol, RDC", defaultName);
+  if (answer === null) return;
+  const name = answer || defaultName;
   if (!name.trim()) return;
   setMsg("stratMsg", "Compression et import de l’image...");
   try {

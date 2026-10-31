@@ -1125,3 +1125,18 @@ body.light-theme .breadcrumb, body.light-theme .strat-card { background: rgba(15
   .strat-thumb { height: 105px; }
   .image-modal-toolbar { flex-direction: column; align-items: stretch; }
 }
+
+/* Classement global et consignes associées aux images de stratégie. */
+.overall-ranking { grid-column: 1 / -1; min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 18px; }
+.overall-ranking details { margin-top: 14px; }
+.overall-winner { background: linear-gradient(135deg, rgba(251,191,36,.15), rgba(52,211,153,.12)); }
+.image-modal-content { display: grid; grid-template-columns: minmax(0,1fr) minmax(280px,360px); flex: 1; min-height: 0; gap: 16px; margin-top: 12px; }
+.image-modal-content .image-modal-stage { min-width: 0; min-height: 0; }
+.strat-notes-panel { overflow-y: auto; padding: 18px; border-radius: 18px; background: #111c35; color: #f1f5f9; border: 1px solid rgba(255,255,255,.14); }
+.strat-notes-panel textarea { width: 100%; min-height: 260px; resize: vertical; color: #f1f5f9; background: #0a1228; }
+.strat-notes-panel textarea[readonly] { border-color: transparent; }
+@media (max-width: 760px) {
+  .image-modal-content { grid-template-columns: 1fr; overflow-y: auto; display: block; }
+  .image-modal-content .image-modal-stage { min-height: 42vh; }
+  .strat-notes-panel { margin-top: 12px; }
+}
