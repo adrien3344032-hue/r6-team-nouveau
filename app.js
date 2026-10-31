@@ -128,7 +128,7 @@ function bindAuth() {
   $("statsModeFilter")?.addEventListener("change", renderAllStats);
   populateAdminSelects();
   $("addRoundBtn")?.addEventListener("click", () => addRoundRow());
-  $("clearRoundsBtn")?.addEventListener("click", () => { $("roundsWrap").innerHTML = ""; });
+  $("clearRoundsBtn")?.addEventListener("click", () => { clearMatchRounds(); });
 
   document.querySelectorAll(".tabs button").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -850,6 +850,7 @@ function renderMatchPlayerInputs(reset = false) {
       row.dataset.name = matchEditorPlayers()[i].name || "Joueur";
       row.querySelector("strong").textContent = matchEditorPlayers()[i].name || "Joueur";
     });
+    syncRoundCounters();
     return;
   }
   const drafts = new Map();
@@ -876,13 +877,14 @@ function renderMatchPlayerInputs(reset = false) {
       </tr>`;
     }).join("")}
   </tbody></table>
-  <p class="muted small-note">Sans rounds détaillés : saisis les totaux Entry K / D, plants, defuses et clutches ici. Avec des rounds : ces cinq compteurs sont recalculés depuis les rounds uniquement, les totaux manuels sont ignorés. Premier kill et première mort de notre équipe peuvent être renseignés dans un même round.</p>`;
+  <p id="roundCountersHelp" class="muted small-note" aria-live="polite"></p>`;
   wrap.querySelectorAll("[data-stat-row]").forEach(row => {
     for (const [field, value] of drafts.get(row.dataset.uid) || []) {
       const el = row.querySelector(`[data-stat="${field}"]`);
       if (el.type === "checkbox") el.checked = value; else el.value = value;
     }
   });
+  syncRoundCounters();
 }
 
 function playerOptions(selected = "") {
@@ -918,8 +920,10 @@ function addRoundRow(data = {}) {
     </div>
     <label>Notes round</label><input type="text" value="${escapeAttr(data.notes || "")}" placeholder="Erreur, strat, info utile..." data-round="notes">
   `;
-  div.querySelector("[data-remove-round]").addEventListener("click", () => div.remove());
+  div.querySelector("[data-remove-round]").addEventListener("click", () => {div.remove();syncRoundCounters();});
+  div.addEventListener("change",syncRoundCounters);
   wrap.appendChild(div);
+  syncRoundCounters();
 }
 
 function collectPlayerStats() {
@@ -1193,6 +1197,7 @@ window.editMatch = (id) => {
     }
     el.value = value;
   }
+  clearMatchRounds();
   renderMatchPlayerInputs(true);
   $("matchPlayersWrap").querySelectorAll("[data-stat-row]").forEach(row => {
     const stat = data.playerStats?.[row.dataset.uid];
@@ -1268,7 +1273,7 @@ async function addMatch() {
 
 function renderMatches() {
   $("matchList").innerHTML = matches.length ? matches.map((m) => {
-    const statsRows = Object.values(m.playerStats || {}).sort((a, b) => String(a.name).localeCompare(String(b.name), "fr"));
+    const statsRows = Object.values(matchStatsFromRounds(m)).sort((a, b) => String(a.name).localeCompare(String(b.name), "fr"));
     const rounds = Array.isArray(m.rounds) ? m.rounds : [];
     return `<div class="item match-card">
       <div class="item-head"><strong>${escapeHtml(m.date || "Sans date")} — ${escapeHtml(m.opponent || "Adversaire")}</strong><span>${escapeHtml(m.result || "")} ${escapeHtml(m.score || "")}</span></div>
@@ -1324,7 +1329,7 @@ function calculateAggregates() {
     agg[p.uid] = { uid: p.uid, name: p.name || "Joueur", matches: 0, roundsPlayed: 0, kprKills: 0, roundsMissing: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
   }
   for (const m of sourceMatches) {
-    for (const [uid, s] of Object.entries(m.playerStats || {})) {
+    for (const [uid, s] of Object.entries(matchStatsFromRounds(m))) {
       if (!agg[uid]) agg[uid] = { uid, name: s.name || nameByUid(uid), matches: 0, roundsPlayed: 0, kprKills: 0, roundsMissing: 0, wins: 0, kills: 0, headshots: 0, deaths: 0, assists: 0, plants: 0, defuses: 0, entryKills: 0, entryDeaths: 0, clutches: 0 };
       agg[uid].matches += 1;
       const roundCount = matchRoundCount(m);
@@ -1507,7 +1512,7 @@ function renderMapStats() {
     row.roundsWon += num(m.teamScore);
     row.roundsLost += num(m.enemyScore);
 
-    for (const [uid, s] of Object.entries(m.playerStats || {})) {
+    for (const [uid, s] of Object.entries(matchStatsFromRounds(m))) {
       row.plants += num(s.plants);
       row.defuses += num(s.defuses);
       row.clutches += num(s.clutches);
@@ -2741,7 +2746,7 @@ function calculateAdvancedStats(source=filteredMatches()) {
       if(["Attaque","Défense"].includes(r.side)) {sides[r.side].total++; sides[r.side].won+=Number(r.result==="Gagné");sideKnown++;}
       if(["team","enemy"].includes(r.opening) && m.playerStats?.[r.opening==="team"?r.firstKillUid:r.firstDeathUid]) {opening[r.opening].total++;opening[r.opening].won+=Number(r.result==="Gagné");openingKnown++;}
     }
-    for(const [uid,s] of Object.entries(m.playerStats||{})) {
+    for(const [uid,s] of Object.entries(matchStatsFromRounds(m))) {
       if(!byPlayer.has(uid)) byPlayer.set(uid,{uid,name:statsPlayerName(uid),matches:0,entryKills:0,entryDeaths:0,splitMatches:0,attack:{kills:0,deaths:0},defense:{kills:0,deaths:0},series:[]});
       const p=byPlayer.get(uid);p.matches++;p.entryKills+=num(s.entryKills);p.entryDeaths+=num(s.entryDeaths);
       if(validSideStats(s)) {p.splitMatches++;for(const side of ["attack","defense"]) for(const field of ["kills","deaths"]) p[side][field]+=s.sideStats[side][field];}
@@ -2781,4 +2786,33 @@ function renderProgressAnalysis(data) {
   const points=plotted.map((x,i)=>({x:40+(plotted.length===1?.5:i/(plotted.length-1))*620,y:160-x.kpr/max*130,match:x}));
   const chart=points.length?`<svg class="progress-chart" viewBox="0 0 700 200" role="img" aria-label="Évolution chronologique des kills par round de ${escapeAttr(p.name)}. Détails dans le tableau ci-dessous."><line x1="40" y1="160" x2="660" y2="160" stroke="currentColor" opacity=".3"/><text x="4" y="30" fill="currentColor">${max.toFixed(2)}</text><text x="15" y="165" fill="currentColor">0</text><polyline points="${points.map(x=>`${x.x},${x.y}`).join(" ")}" fill="none" stroke="#4ba3ff" stroke-width="3"/>${points.map(x=>`<circle cx="${x.x}" cy="${x.y}" r="4" fill="#4ba3ff"><title>${escapeHtml(x.match.date)} · ${escapeHtml(x.match.map)} : ${x.match.kpr.toFixed(2)} KPR</title></circle>`).join("")}<text x="40" y="190" fill="currentColor">${escapeHtml(plotted[0].date)}</text><text x="660" y="190" text-anchor="end" fill="currentColor">${escapeHtml(plotted.at(-1).date)}</text></svg>`:'<p class="muted">Complète les scores pour afficher la courbe KPR.</p>';
   wrap.innerHTML=`<div class="analysis-metrics"><div><span>KPR des 5 derniers matchs</span><strong>${recent.kpr===null?"—":recent.kpr.toFixed(2)}</strong><small>${recent.matches} match(s) avec rounds connus</small></div><div><span>Écart avec les 5 précédents</span><strong>${delta===null?"—":`${delta>0?"+":""}${delta.toFixed(2)} KPR`}</strong><small>${before.matches} match(s) comparés ; groupes de 5 maximum</small></div><div><span>Régularité : dispersion KPR</span><strong>${p.deviation===null?"3 matchs minimum":p.deviation.toFixed(2)}</strong><small>${p.sample} match(s) ; plus la dispersion est faible, plus les performances sont stables.</small></div></div><p class="muted">La régularité mesure l’écart-type des KPR par match, pas le niveau du joueur. La courbe est par match (espacement uniforme), dans l’ordre des dates ; les matchs du même jour n’ont pas d’ordre horaire connu. Tous les matchs filtrés figurent ci-dessous.</p>${chart}<details><summary>Détails des ${p.series.length} matchs : K/D, KPR et premiers duels</summary><div class="analysis-table-scroll"><table><thead><tr><th>Date</th><th>Map</th><th>Adversaire</th><th>K / D</th><th>K/D</th><th>KPR</th><th>Premiers duels</th></tr></thead><tbody>${p.series.map(x=>`<tr><td>${escapeHtml(x.date)}</td><td>${escapeHtml(x.map)}</td><td>${escapeHtml(x.opponent)}</td><td>${x.kills} / ${x.deaths}</td><td>${statsRatio(x.kills,x.deaths)}</td><td>${x.kpr===null?"—":x.kpr.toFixed(2)}</td><td>${statsRate(x.entryKills,x.entryKills+x.entryDeaths)}</td></tr>`).join("")}</tbody></table></div></details>`;
+}
+
+
+function matchStatsFromRounds(match) {
+  const stats=Object.fromEntries(Object.entries(match.playerStats || {}).map(([uid,stat])=>[uid,{...stat}]));
+  return enrichStatsWithRounds(stats,Array.isArray(match.rounds)?match.rounds:[]);
+}
+function clearMatchRounds() {
+  if ($("roundsWrap")) $("roundsWrap").innerHTML="";
+  syncRoundCounters();
+}
+function syncRoundCounters() {
+  const fields=["entryKills","entryDeaths","plants","defuses","clutches"];
+  const rounds=collectRounds(),automatic=Boolean(rounds.length);
+  const rows=Array.from(document.querySelectorAll("#matchPlayersWrap [data-stat-row]"));
+  const stats=Object.fromEntries(rows.map(row=>[row.dataset.uid,{}]));
+  if(automatic)enrichStatsWithRounds(stats,rounds);
+  for(const row of rows) for(const field of fields) {
+    const el=row.querySelector(`[data-stat="${field}"]`);if(!el)continue;
+    if(automatic) {
+      if(el.dataset.roundAuto!=="true")el.dataset.manualValue=el.value;
+      el.value=stats[row.dataset.uid][field];el.readOnly=true;el.dataset.roundAuto="true";
+      el.setAttribute("aria-readonly","true");el.title="Calculé automatiquement depuis les rounds";
+    } else {
+      if(el.dataset.roundAuto==="true")el.value=el.dataset.manualValue ?? "0";
+      el.readOnly=false;el.removeAttribute("aria-readonly");delete el.dataset.roundAuto;delete el.dataset.manualValue;el.title="Saisie manuelle sans rounds";
+    }
+  }
+  const help=$("roundCountersHelp");if(help)help.textContent=automatic?"Automatique : Entry K / D, plants, defuses et clutches sont calculés depuis les rounds saisis et ne sont plus à saisir ici. Complète tous les rounds pour obtenir les totaux du match. K/D attaque/défense reste manuel.":"Sans rounds : saisis manuellement Entry K / D, plants, defuses et clutches. Dès qu’un round est ajouté, ces cinq totaux sont calculés automatiquement. K/D attaque/défense reste manuel.";
 }

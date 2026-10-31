@@ -1182,3 +1182,5 @@ body.light-theme .breadcrumb, body.light-theme .strat-card { background: rgba(15
 .side-stat-inputs label {margin:0;font-size:.7rem;}
 .side-stat-inputs input {width:65px!important;min-width:45px;}
 .advanced-stats-card details summary {cursor:pointer;padding:12px 0;}
+
+[data-round-auto="true"] {opacity:.85;background:var(--card-bg,rgba(80,140,210,.12));cursor:default;}
