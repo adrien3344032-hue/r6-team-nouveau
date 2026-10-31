@@ -861,7 +861,7 @@ function renderMatchPlayerInputs(reset = false) {
     wrap.innerHTML = `<p class="muted">Aucun joueur inscrit. Les joueurs apparaissent après création de compte.</p>`;
     return;
   }
-  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
+  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th><th>K/D par côté (facultatif)</th></tr></thead><tbody>
     ${matchEditorPlayers().map((p) => {
       const key = safeKey(p.uid);
       return `<tr data-stat-row="${key}" data-uid="${escapeAttr(p.uid)}" data-name="${escapeAttr(p.name || "Joueur")}">
@@ -872,6 +872,7 @@ function renderMatchPlayerInputs(reset = false) {
         <td><input type="number" min="0" value="0" data-stat="deaths"></td>
         <td><input type="number" min="0" step="1" value="0" data-stat="assists"></td>
         ${["entryKills", "entryDeaths", "plants", "defuses", "clutches"].map(field => `<td><input type="number" min="0" step="1" value="0" data-stat="${field}"></td>`).join("")}
+        <td><div class="side-stat-inputs">${["attack", "defense"].map(side => `<fieldset><legend>${side === "attack" ? "Attaque" : "Défense"}</legend>${["kills","deaths"].map(field => `<label>${field === "kills" ? "K" : "D"}<input type="number" min="0" step="1" placeholder="—" aria-label="${escapeAttr(p.name)} ${side === "attack" ? "attaque" : "défense"} ${field === "kills" ? "kills" : "morts"}" data-stat="${side}_${field}"></label>`).join("")}</fieldset>`).join("")}</div></td>
       </tr>`;
     }).join("")}
   </tbody></table>
@@ -907,6 +908,7 @@ function addRoundRow(data = {}) {
       <div><label>Numéro</label><input type="number" min="1" value="${escapeAttr(data.number || index)}" data-round="number"></div>
       <div><label>Côté</label><select data-round="side">${sides.map(s => `<option value="${s}" ${data.side === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
       <div><label>Résultat</label><select data-round="result">${roundResults.map(r => `<option value="${r}" ${data.result === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div><label>Ouverture du round</label><select data-round="opening">${[["","Non renseignée"],["team","Premier duel gagné par notre équipe"],["enemy","Premier duel perdu par notre équipe"]].map(([v,label])=>`<option value="${v}" ${data.opening === v ? "selected" : ""}>${label}</option>`).join("")}</select></div>
       <div><label>Premier kill</label><select data-round="firstKillUid">${playerOptions(data.firstKillUid || "")}</select></div>
       <div><label>Première mort</label><select data-round="firstDeathUid">${playerOptions(data.firstDeathUid || "")}</select></div>
       <div><label>Plant</label><select data-round="plantUid">${playerOptions(data.plantUid || "")}</select></div>
@@ -940,6 +942,9 @@ function collectPlayerStats() {
       entryDeaths: num(row.querySelector('[data-stat="entryDeaths"]')?.value),
       clutches: num(row.querySelector('[data-stat="clutches"]')?.value)
     };
+    const fields=["attack_kills","attack_deaths","defense_kills","defense_deaths"];
+    const values=fields.map(field=>row.querySelector(`[data-stat="${field}"]`)?.value ?? "");
+    if(values.some(value=>value!=="")) out[uid].sideStats={attack:{kills:values[0]===""?null:Number(values[0]),deaths:values[1]===""?null:Number(values[1])},defense:{kills:values[2]===""?null:Number(values[2]),deaths:values[3]===""?null:Number(values[3])}};
   });
   return out;
 }
@@ -950,6 +955,7 @@ function collectRounds() {
     return {
       number: num(get("number")),
       side: get("side"),
+      opening: get("opening"),
       result: get("result"),
       firstKillUid: get("firstKillUid"),
       firstDeathUid: get("firstDeathUid"),
@@ -1001,6 +1007,8 @@ function validateMatchInput(stats, rounds) {
   for (const round of rounds) {
     if (!Number.isInteger(round.number) || round.number < 1 || round.number > team + enemy || seen.has(round.number)) return "Les numéros de rounds doivent être entiers, uniques et compris dans le score total.";
     seen.add(round.number);
+    if (!["", "team", "enemy"].includes(round.opening || "")) return `Round ${round.number} : ouverture invalide.`;
+    if (round.opening === "team" && !round.firstKillUid || round.opening === "enemy" && !round.firstDeathUid) return `Round ${round.number} : indique le joueur du premier duel pour cette ouverture.`;
     for (const event of ["firstKillUid", "firstDeathUid", "plantUid", "defuseUid", "clutchUid"]) {
       if (round[event] && !stats[round[event]]) return `Round ${round.number} : le joueur sélectionné doit être coché présent.`;
     }
@@ -1015,6 +1023,11 @@ function validateMatchInput(stats, rounds) {
     if (stat.deaths > team + enemy) return `Les morts de ${stat.name} dépassent le nombre de rounds.`;
     if (stat.entryKills > stat.kills || stat.entryDeaths > stat.deaths) return `Les Entry de ${stat.name} dépassent ses kills ou ses morts.`;
     if ([stat.plants, stat.defuses, stat.clutches].some(v => v > team + enemy)) return `Un compteur de ${stat.name} dépasse le nombre de rounds.`;
+    if (stat.sideStats) {
+      const a=stat.sideStats.attack,d=stat.sideStats.defense;
+      if (!a || !d || ![a.kills,a.deaths,d.kills,d.deaths].every(v=>Number.isInteger(v)&&v>=0)) return `K/D par côté de ${stat.name} : complète les quatre champs avec des entiers positifs ou nuls, ou laisse-les tous vides.`;
+      if (a.kills+d.kills !== stat.kills || a.deaths+d.deaths !== stat.deaths) return `K/D par côté de ${stat.name} : les sommes attaque + défense doivent correspondre aux kills et morts du match.`;
+    }
     entriesK += stat.entryKills; entriesD += stat.entryDeaths;
   }
   if (entriesK > team + enemy || entriesD > team + enemy) return "Le total des premiers kills ou des premières morts de l’équipe dépasse le nombre de rounds.";
@@ -1185,6 +1198,7 @@ window.editMatch = (id) => {
     const stat = data.playerStats?.[row.dataset.uid];
     row.querySelector('[data-stat="present"]').checked = Boolean(stat);
     for (const field of ["kills", "headshots", "deaths", "assists", "entryKills", "entryDeaths", "plants", "defuses", "clutches"]) row.querySelector(`[data-stat="${field}"]`).value = stat?.[field] ?? 0;
+    for (const side of ["attack","defense"]) for(const field of ["kills","deaths"]) row.querySelector(`[data-stat="${side}_${field}"]`).value=stat?.sideStats?.[side]?.[field] ?? "";
   });
   $("roundsWrap").innerHTML = "";
   for (const round of data.rounds || []) addRoundRow(round);
@@ -1265,8 +1279,8 @@ function renderMatches() {
         <div class="table-wrap"><table><thead><tr><th>Joueur</th><th>K</th><th>HS</th><th>HS%</th><th>D</th><th>A</th><th>K/D</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th></tr></thead><tbody>
           ${statsRows.map((s) => `<tr><td>${escapeHtml(s.name || "Joueur")}</td><td>${s.kills || 0}</td><td>${s.headshots || 0}</td><td>${hsPercent(s.headshots, s.kills)}</td><td>${s.deaths || 0}</td><td>${s.assists || 0}</td><td>${kd(s.kills, s.deaths)}</td><td>${s.entryKills || 0}</td><td>${s.entryDeaths || 0}</td><td>${s.plants || 0}</td><td>${s.defuses || 0}</td><td>${s.clutches || 0}</td></tr>`).join("")}
         </tbody></table></div>
-        ${rounds.length ? `<h4>Rounds</h4><div class="table-wrap"><table><thead><tr><th>#</th><th>Côté</th><th>Résultat</th><th>Premier kill</th><th>Première mort</th><th>Plant</th><th>Defuse</th><th>Clutch</th><th>Site / notes</th></tr></thead><tbody>
-          ${rounds.map((r) => `<tr><td>${r.number || ""}</td><td>${escapeHtml(r.side || "")}</td><td>${escapeHtml(r.result || "")}</td><td>${escapeHtml(nameByUid(r.firstKillUid))}</td><td>${escapeHtml(nameByUid(r.firstDeathUid))}</td><td>${escapeHtml(nameByUid(r.plantUid))}</td><td>${escapeHtml(nameByUid(r.defuseUid))}</td><td>${escapeHtml(nameByUid(r.clutchUid))}</td><td>${escapeHtml([r.site, r.notes].filter(Boolean).join(" — "))}</td></tr>`).join("")}
+        ${rounds.length ? `<h4>Rounds</h4><div class="table-wrap"><table><thead><tr><th>#</th><th>Côté</th><th>Résultat</th><th>Ouverture</th><th>Premier kill</th><th>Première mort</th><th>Plant</th><th>Defuse</th><th>Clutch</th><th>Site / notes</th></tr></thead><tbody>
+          ${rounds.map((r) => `<tr><td>${r.number || ""}</td><td>${escapeHtml(r.side || "")}</td><td>${escapeHtml(r.result || "")}</td><td>${r.opening === "team" ? "Gagnée" : r.opening === "enemy" ? "Perdue" : "—"}</td><td>${escapeHtml(nameByUid(r.firstKillUid))}</td><td>${escapeHtml(nameByUid(r.firstDeathUid))}</td><td>${escapeHtml(nameByUid(r.plantUid))}</td><td>${escapeHtml(nameByUid(r.defuseUid))}</td><td>${escapeHtml(nameByUid(r.clutchUid))}</td><td>${escapeHtml([r.site, r.notes].filter(Boolean).join(" — "))}</td></tr>`).join("")}
         </tbody></table></div>` : `<p class="muted">Aucun round détaillé saisi.</p>`}
       </details>
       ${m.notes ? `<p>${escapeHtml(m.notes)}</p>` : ""}
@@ -1300,6 +1314,7 @@ function renderAllStats() {
   renderCharts();
   renderMapStats();
   renderRanking();
+  renderAdvancedStats();
 }
 
 function calculateAggregates() {
@@ -1502,11 +1517,11 @@ function renderMapStats() {
     }
 
     for (const r of Array.isArray(m.rounds) ? m.rounds : []) {
-      if (r.side === "Attaque") {
+      if (r.side === "Attaque" && ["Gagné","Perdu"].includes(r.result)) {
         row.attackPlayed += 1;
         if (r.result === "Gagné") row.attackWon += 1;
       }
-      if (r.side === "Défense") {
+      if (r.side === "Défense" && ["Gagné","Perdu"].includes(r.result)) {
         row.defensePlayed += 1;
         if (r.result === "Gagné") row.defenseWon += 1;
       }
@@ -1521,8 +1536,8 @@ function renderMapStats() {
     ${rows.map((r) => {
       const winRate = r.matches ? Math.round((r.wins / r.matches) * 100) : 0;
       const roundDiff = r.roundsWon - r.roundsLost;
-      const attackRate = r.attackPlayed ? `${Math.round((r.attackWon / r.attackPlayed) * 100)}%` : "-";
-      const defenseRate = r.defensePlayed ? `${Math.round((r.defenseWon / r.defensePlayed) * 100)}%` : "-";
+      const attackRate = r.attackPlayed ? `${Math.round((r.attackWon / r.attackPlayed) * 100)}% (${r.attackWon}/${r.attackPlayed})` : "-";
+      const defenseRate = r.defensePlayed ? `${Math.round((r.defenseWon / r.defensePlayed) * 100)}% (${r.defenseWon}/${r.defensePlayed})` : "-";
       const entryDiff = r.entryKills - r.entryDeaths;
       const top = Object.entries(r.playerKills).sort((a, b) => b[1] - a[1])[0];
       return `<tr><td class="map-name"><strong>${escapeHtml(r.map)}</strong></td><td>${r.matches}</td><td>${winRate}%</td><td>${r.wins}-${r.losses}-${r.draws}</td><td>${r.roundsWon}-${r.roundsLost}</td><td class="${roundDiff >= 0 ? "positive" : "negative"}">${roundDiff > 0 ? "+" : ""}${roundDiff}</td><td>${attackRate}</td><td>${defenseRate}</td><td>${r.plants}</td><td>${r.defuses}</td><td>${r.clutches}</td><td class="${entryDiff >= 0 ? "positive" : "negative"}">${entryDiff > 0 ? "+" : ""}${entryDiff}</td><td>${top ? `${escapeHtml(statsPlayerName(top[0]))} (${top[1]})` : "-"}</td></tr>`;
@@ -2706,4 +2721,64 @@ function humanError(err) {
   if (messages[code]) return messages[code] + ` [${code}]`;
   if (code.includes("permission-denied")) return "Permission refusée : vérifie les règles Firestore. [" + code + "]";
   return (err?.message || "Erreur inconnue.") + (code ? ` [${code}]` : "");
+}
+
+// Advanced analytics use recorded facts only. An absent side split or opening stays unknown.
+function statsRate(wins,total) { return total ? `${Math.round(wins/total*100)}% (${wins}/${total})` : "—"; }
+function statsRatio(kills,deaths) { return deaths ? (kills/deaths).toFixed(2) : kills ? "∞" : "—"; }
+function validSideStats(stat) {
+  const a=stat?.sideStats?.attack,d=stat?.sideStats?.defense;
+  return Boolean(a&&d&&[a.kills,a.deaths,d.kills,d.deaths].every(v=>Number.isInteger(v)&&v>=0)&&a.kills+d.kills===stat.kills&&a.deaths+d.deaths===stat.deaths);
+}
+function calculateAdvancedStats(source=filteredMatches()) {
+  const sides={Attaque:{won:0,total:0},Défense:{won:0,total:0}},opening={team:{won:0,total:0},enemy:{won:0,total:0}};
+  let rounds=0,sideKnown=0,openingKnown=0;
+  const byPlayer=new Map();
+  for(const m of source) {
+    rounds+=matchRoundCount(m);
+    for(const r of Array.isArray(m.rounds)?m.rounds:[]) {
+      if(!["Gagné","Perdu"].includes(r.result)) continue;
+      if(["Attaque","Défense"].includes(r.side)) {sides[r.side].total++; sides[r.side].won+=Number(r.result==="Gagné");sideKnown++;}
+      if(["team","enemy"].includes(r.opening) && m.playerStats?.[r.opening==="team"?r.firstKillUid:r.firstDeathUid]) {opening[r.opening].total++;opening[r.opening].won+=Number(r.result==="Gagné");openingKnown++;}
+    }
+    for(const [uid,s] of Object.entries(m.playerStats||{})) {
+      if(!byPlayer.has(uid)) byPlayer.set(uid,{uid,name:statsPlayerName(uid),matches:0,entryKills:0,entryDeaths:0,splitMatches:0,attack:{kills:0,deaths:0},defense:{kills:0,deaths:0},series:[]});
+      const p=byPlayer.get(uid);p.matches++;p.entryKills+=num(s.entryKills);p.entryDeaths+=num(s.entryDeaths);
+      if(validSideStats(s)) {p.splitMatches++;for(const side of ["attack","defense"]) for(const field of ["kills","deaths"]) p[side][field]+=s.sideStats[side][field];}
+      const count=matchRoundCount(m);
+      p.series.push({date:m.date||"",id:String(m.id||""),map:m.map||"Map inconnue",opponent:m.opponent||"",kills:num(s.kills),deaths:num(s.deaths),entryKills:num(s.entryKills),entryDeaths:num(s.entryDeaths),rounds:count,kpr:count>0?num(s.kills)/count:null});
+    }
+  }
+  const playerRows=[...byPlayer.values()].sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+  for(const p of playerRows) {
+    p.series.sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));
+    const values=p.series.filter(x=>x.kpr!==null).map(x=>x.kpr);
+    p.sample=values.length;p.mean=values.length?values.reduce((a,b)=>a+b,0)/values.length:null;
+    p.deviation=values.length>=3?Math.sqrt(values.reduce((a,b)=>a+(b-p.mean)**2,0)/values.length):null;
+  }
+  return {sides,opening,rounds,sideKnown,openingKnown,players:playerRows};
+}
+function renderAdvancedStats() {
+  const roundWrap=$("roundAnalysisWrap"),playerWrap=$("playerAnalysisWrap"),filter=$("progressPlayerFilter");
+  if(!roundWrap||!playerWrap||!filter) return;
+  const a=calculateAdvancedStats();
+  roundWrap.innerHTML=`<div class="analysis-metrics">${Object.entries(a.sides).map(([side,r])=>`<div><span>Victoire en ${side.toLowerCase()}</span><strong>${statsRate(r.won,r.total)}</strong></div>`).join("")}${[["team","Victoire après premier duel gagné"],["enemy","Victoire après premier duel perdu"]].map(([key,label])=>`<div><span>${label}</span><strong>${statsRate(a.opening[key].won,a.opening[key].total)}</strong></div>`).join("")}</div><p class="muted">Couverture : côté et résultat connus pour ${a.sideKnown}/${a.rounds} rounds ; ouverture et résultat connus pour ${a.openingKnown}/${a.rounds}. L’ouverture est le premier duel du round entre les deux équipes. Les anciens champs premier kill / première mort ne donnent pas leur ordre : renseigne « Ouverture du round » en modifiant le match.</p>`;
+  playerWrap.innerHTML=`<p class="muted">Premiers duels : Entry K ÷ (Entry K + Entry D), sur les événements saisis. K/D par côté : uniquement les matchs avec une répartition complète et cohérente. « ∞ » signifie des kills sans mort ; « — » signifie aucun duel ou ratio indisponible.</p><div class="analysis-table-scroll"><table><thead><tr><th>Joueur</th><th>Premiers duels</th><th>Entry K / D</th><th>K/D attaque</th><th>K / D attaque</th><th>K/D défense</th><th>K / D défense</th><th>Matchs répartis</th></tr></thead><tbody>${a.players.map(p=>`<tr><td>${escapeHtml(p.name)}</td><td>${statsRate(p.entryKills,p.entryKills+p.entryDeaths)}</td><td>${p.entryKills} / ${p.entryDeaths}</td><td>${p.splitMatches?statsRatio(p.attack.kills,p.attack.deaths):"—"}</td><td>${p.splitMatches?`${p.attack.kills} / ${p.attack.deaths}`:"—"}</td><td>${p.splitMatches?statsRatio(p.defense.kills,p.defense.deaths):"—"}</td><td>${p.splitMatches?`${p.defense.kills} / ${p.defense.deaths}`:"—"}</td><td>${p.splitMatches}/${p.matches}</td></tr>`).join("")||'<tr><td colspan="8">Aucun match sur cette sélection.</td></tr>'}</tbody></table></div><p class="muted">Pour compléter le K/D par côté, utilise les quatre champs facultatifs Attaque K/D et Défense K/D dans la saisie du match. Leur somme doit correspondre aux totaux du joueur.</p>`;
+  const previous=filter.value;
+  filter.innerHTML=a.players.map(p=>`<option value="${escapeAttr(p.uid)}">${escapeHtml(p.name)}</option>`).join("");
+  if(a.players.some(p=>p.uid===previous))filter.value=previous;
+  filter.onchange=renderProgressAnalysis;
+  renderProgressAnalysis(a);
+}
+function renderProgressAnalysis(data) {
+  const a=data?.players?data:calculateAdvancedStats(),wrap=$("progressAnalysisWrap");if(!wrap)return;
+  const p=a.players.find(p=>p.uid===$("progressPlayerFilter")?.value);
+  if(!p){wrap.innerHTML='<p class="muted">Aucun match sur cette sélection.</p>';return;}
+  const summary=list=>{const valid=list.filter(x=>x.rounds>0),r=valid.reduce((t,x)=>t+x.rounds,0);return {matches:valid.length,kpr:r?valid.reduce((t,x)=>t+x.kills,0)/r:null};};
+  const recent=summary(p.series.slice(-5)),before=summary(p.series.slice(-10,-5));
+  const delta=recent.kpr!==null&&before.kpr!==null?recent.kpr-before.kpr:null;
+  const plotted=p.series.filter(x=>x.kpr!==null),max=Math.max(1,...plotted.map(x=>x.kpr));
+  const points=plotted.map((x,i)=>({x:40+(plotted.length===1?.5:i/(plotted.length-1))*620,y:160-x.kpr/max*130,match:x}));
+  const chart=points.length?`<svg class="progress-chart" viewBox="0 0 700 200" role="img" aria-label="Évolution chronologique des kills par round de ${escapeAttr(p.name)}. Détails dans le tableau ci-dessous."><line x1="40" y1="160" x2="660" y2="160" stroke="currentColor" opacity=".3"/><text x="4" y="30" fill="currentColor">${max.toFixed(2)}</text><text x="15" y="165" fill="currentColor">0</text><polyline points="${points.map(x=>`${x.x},${x.y}`).join(" ")}" fill="none" stroke="#4ba3ff" stroke-width="3"/>${points.map(x=>`<circle cx="${x.x}" cy="${x.y}" r="4" fill="#4ba3ff"><title>${escapeHtml(x.match.date)} · ${escapeHtml(x.match.map)} : ${x.match.kpr.toFixed(2)} KPR</title></circle>`).join("")}<text x="40" y="190" fill="currentColor">${escapeHtml(plotted[0].date)}</text><text x="660" y="190" text-anchor="end" fill="currentColor">${escapeHtml(plotted.at(-1).date)}</text></svg>`:'<p class="muted">Complète les scores pour afficher la courbe KPR.</p>';
+  wrap.innerHTML=`<div class="analysis-metrics"><div><span>KPR des 5 derniers matchs</span><strong>${recent.kpr===null?"—":recent.kpr.toFixed(2)}</strong><small>${recent.matches} match(s) avec rounds connus</small></div><div><span>Écart avec les 5 précédents</span><strong>${delta===null?"—":`${delta>0?"+":""}${delta.toFixed(2)} KPR`}</strong><small>${before.matches} match(s) comparés ; groupes de 5 maximum</small></div><div><span>Régularité : dispersion KPR</span><strong>${p.deviation===null?"3 matchs minimum":p.deviation.toFixed(2)}</strong><small>${p.sample} match(s) ; plus la dispersion est faible, plus les performances sont stables.</small></div></div><p class="muted">La régularité mesure l’écart-type des KPR par match, pas le niveau du joueur. La courbe est par match (espacement uniforme), dans l’ordre des dates ; les matchs du même jour n’ont pas d’ordre horaire connu. Tous les matchs filtrés figurent ci-dessous.</p>${chart}<details><summary>Détails des ${p.series.length} matchs : K/D, KPR et premiers duels</summary><div class="analysis-table-scroll"><table><thead><tr><th>Date</th><th>Map</th><th>Adversaire</th><th>K / D</th><th>K/D</th><th>KPR</th><th>Premiers duels</th></tr></thead><tbody>${p.series.map(x=>`<tr><td>${escapeHtml(x.date)}</td><td>${escapeHtml(x.map)}</td><td>${escapeHtml(x.opponent)}</td><td>${x.kills} / ${x.deaths}</td><td>${statsRatio(x.kills,x.deaths)}</td><td>${x.kpr===null?"—":x.kpr.toFixed(2)}</td><td>${statsRate(x.entryKills,x.entryKills+x.entryDeaths)}</td></tr>`).join("")}</tbody></table></div></details>`;
 }

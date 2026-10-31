@@ -1168,3 +1168,17 @@ body.light-theme .breadcrumb, body.light-theme .strat-card { background: rgba(15
 #annotationOverlay.panning-tool, #annotationOverlay.panning-tool [data-annotation-id] { cursor: grab; touch-action: none; }
 #annotationOverlay.panning-tool:active, #annotationOverlay.panning-tool:active [data-annotation-id] { cursor: grabbing; }
 .availability-save-stamp { display: block; margin-top: 7px; color: var(--muted); font-size: .66rem; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+
+/* Additional statistics retain readable columns on small screens. */
+.analysis-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0; }
+.analysis-metrics>div {padding:16px;border:1px solid var(--border,#52617f);border-radius:10px;display:flex;flex-direction:column;gap:8px;}
+.analysis-metrics strong {font-size:1.35rem;}
+.analysis-metrics small {opacity:.8;}
+.analysis-table-scroll {overflow-x:auto;max-width:100%;}
+.analysis-table-scroll table {min-width:680px;}
+.progress-chart {width:100%;max-height:300px;margin:12px 0;font-size:12px;}
+.side-stat-inputs {min-width:165px;display:grid;gap:6px;}
+.side-stat-inputs fieldset {display:flex;gap:6px;padding:5px;border:1px solid var(--border,#52617f);}
+.side-stat-inputs label {margin:0;font-size:.7rem;}
+.side-stat-inputs input {width:65px!important;min-width:45px;}
+.advanced-stats-card details summary {cursor:pointer;padding:12px 0;}
