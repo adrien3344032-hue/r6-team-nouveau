@@ -2092,10 +2092,12 @@ let annotationUndo = [];
 let annotationRedo = [];
 let savingAnnotations = false;
 const ANNOTATION_LIMIT = 80;
+const ANNOTATION_MARGIN = 0.25;
+const ANNOTATION_BOARD_SCALE = 1 + 2 * ANNOTATION_MARGIN;
 const ANNOTATION_BYTES = 30000;
 
 function annotationCopy(value) { return JSON.parse(JSON.stringify(value)); }
-function annotationNumber(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
+function annotationNumber(value) { return typeof value === "number" && Number.isFinite(value) && value >= -ANNOTATION_MARGIN && value <= 1 + ANNOTATION_MARGIN; }
 function decodeAnnotations(raw) {
   const items = raw ? JSON.parse(raw) : [];
   if (!Array.isArray(items) || items.length > ANNOTATION_LIMIT) throw new Error("Format d’annotations invalide.");
@@ -2134,13 +2136,14 @@ function setAnnotationTool(tool) {
 }
 function annotationPoint(event) {
   const rect = $("stratCanvas").getBoundingClientRect();
-  return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))) };
+  const fromBoard = (position, start, length) => Math.max(-ANNOTATION_MARGIN, Math.min(1 + ANNOTATION_MARGIN, (position - start) / Math.max(1, length) * ANNOTATION_BOARD_SCALE - ANNOTATION_MARGIN));
+  return { x:fromBoard(event.clientX,rect.left,rect.width), y:fromBoard(event.clientY,rect.top,rect.height) };
 }
 function moveAnnotation(item, dx, dy) {
   const xs = item.type === "arrow" ? [item.x, item.x2] : [item.x];
   const ys = item.type === "arrow" ? [item.y, item.y2] : [item.y];
-  dx = Math.max(-Math.min(...xs), Math.min(1 - Math.max(...xs), dx));
-  dy = Math.max(-Math.min(...ys), Math.min(1 - Math.max(...ys), dy));
+  dx = Math.max(-ANNOTATION_MARGIN - Math.min(...xs), Math.min(1 + ANNOTATION_MARGIN - Math.max(...xs), dx));
+  dy = Math.max(-ANNOTATION_MARGIN - Math.min(...ys), Math.min(1 + ANNOTATION_MARGIN - Math.max(...ys), dy));
   return { ...item, x: item.x + dx, y: item.y + dy, ...(item.type === "arrow" ? { x2:item.x2 + dx, y2:item.y2 + dy } : {}) };
 }
 function newAnnotationId() { return "ann_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,10); }
@@ -2222,7 +2225,7 @@ function annotationViewHeight() {
 function renderAnnotations() {
   const overlay = $("annotationOverlay"); if (!overlay) return;
   const height = annotationViewHeight();
-  overlay.setAttribute("viewBox", `0 0 1000 ${height}`);
+  overlay.setAttribute("viewBox", `${-1000 * ANNOTATION_MARGIN} ${-height * ANNOTATION_MARGIN} ${1000 * ANNOTATION_BOARD_SCALE} ${height * ANNOTATION_BOARD_SCALE}`);
   overlay.innerHTML = imageAnnotations.map(item => {
     const selected = item.id === selectedAnnotationId && canEditAnnotations();
     const x=item.x*1000, y=item.y*height;
@@ -2264,7 +2267,7 @@ function updateAnnotationControls() {
   }
   $("annotationOverlay").classList.toggle("can-annotate", editable);
   $("annotationOverlay").classList.toggle("drawing-tool", editable && annotationTool !== "select");
-  $("annotationHelp").textContent = annotationTool === "text" ? "Clique sur l’image pour placer ton texte, puis déplace-le en mode Sélection." : annotationTool === "arrow" ? "Clique puis fais glisser pour tracer une flèche." : "Sélectionne puis déplace un texte ou une flèche. Les deux poignées d’une flèche déplacent ses extrémités.";
+  $("annotationHelp").textContent = annotationTool === "text" ? "Clique sur l’image ou dans la marge autour pour placer ton texte, puis déplace-le en mode Sélection." : annotationTool === "arrow" ? "Clique puis fais glisser pour tracer une flèche, sur l’image ou dans les marges." : "Sélectionne puis déplace un texte ou une flèche. Les deux poignées d’une flèche déplacent ses extrémités.";
   $("annotationSaveBtn").disabled = !editable || !annotationsDirty() || Boolean(annotationGesture);
   const message = $("annotationsMsg").textContent;
   if (annotationsDirty() && (!message || message.startsWith("Annotations enregistrées"))) setMsg("annotationsMsg", "Modifications non enregistrées.");
@@ -2274,10 +2277,10 @@ function fitStratCanvas() {
   const stage = $("stratImageStage"), image = $("imageModalImg"), canvas = $("stratCanvas"), viewport = $("stratCanvasViewport");
   if (!stage || !canvas || !viewport || !image) return;
   const ratio = (image.naturalWidth || 1000) / (image.naturalHeight || 700);
-  const width = Math.max(100,Math.min(image.naturalWidth || 1000, (stage.clientWidth || 1000)-32, ((stage.clientHeight || 700)-32)*ratio));
-  canvas.style.width=width+"px"; canvas.style.height=(width/ratio)+"px";
+  const width = Math.max(100,Math.min(image.naturalWidth || 1000, ((stage.clientWidth || 1000)-32)/ANNOTATION_BOARD_SCALE, (((stage.clientHeight || 700)-32)/ANNOTATION_BOARD_SCALE)*ratio));
+  canvas.style.width=(width*ANNOTATION_BOARD_SCALE)+"px"; canvas.style.height=(width/ratio*ANNOTATION_BOARD_SCALE)+"px";
   canvas.style.transform=`scale(${imageZoom})`;
-  viewport.style.width=(width*imageZoom)+"px"; viewport.style.height=(width/ratio*imageZoom)+"px";
+  viewport.style.width=(width*ANNOTATION_BOARD_SCALE*imageZoom)+"px"; viewport.style.height=(width/ratio*ANNOTATION_BOARD_SCALE*imageZoom)+"px";
   renderAnnotations();
 }
 function loadImageAnnotations(item) {
