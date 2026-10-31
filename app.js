@@ -862,17 +862,16 @@ function renderMatchPlayerInputs(reset = false) {
     wrap.innerHTML = `<p class="muted">Aucun joueur inscrit. Les joueurs apparaissent après création de compte.</p>`;
     return;
   }
-  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th><th>Entry K</th><th>Entry D</th><th>Plants</th><th>Defuses</th><th>Clutches</th><th>K/D par côté (facultatif)</th></tr></thead><tbody>
+  wrap.innerHTML = `<table class="stats-input compact-player-stats"><thead><tr><th>Présent</th><th>Joueur</th><th>Kills</th><th>Headshots</th><th>Morts</th><th>Assists</th><th>K/D par côté (facultatif)</th></tr></thead><tbody>
     ${matchEditorPlayers().map((p) => {
       const key = safeKey(p.uid);
       return `<tr data-stat-row="${key}" data-uid="${escapeAttr(p.uid)}" data-name="${escapeAttr(p.name || "Joueur")}">
         <td><input class="small-check" type="checkbox" data-stat="present" checked></td>
-        <td><strong>${escapeHtml(p.name || "Joueur")}</strong></td>
+        <td><strong>${escapeHtml(p.name || "Joueur")}</strong>${["entryKills", "entryDeaths", "plants", "defuses", "clutches"].map(field => `<input type="hidden" value="0" data-stat="${field}">`).join("")}</td>
         <td><input type="number" min="0" value="0" data-stat="kills"></td>
         <td><input type="number" min="0" value="0" data-stat="headshots"></td>
         <td><input type="number" min="0" value="0" data-stat="deaths"></td>
         <td><input type="number" min="0" step="1" value="0" data-stat="assists"></td>
-        ${["entryKills", "entryDeaths", "plants", "defuses", "clutches"].map(field => `<td><input type="number" min="0" step="1" value="0" data-stat="${field}"></td>`).join("")}
         <td><div class="side-stat-inputs">${["attack", "defense"].map(side => `<fieldset><legend>${side === "attack" ? "Attaque" : "Défense"}</legend>${["kills","deaths"].map(field => `<label>${field === "kills" ? "K" : "D"}<input type="number" min="0" step="1" placeholder="—" aria-label="${escapeAttr(p.name)} ${side === "attack" ? "attaque" : "défense"} ${field === "kills" ? "kills" : "morts"}" data-stat="${side}_${field}"></label>`).join("")}</fieldset>`).join("")}</div></td>
       </tr>`;
     }).join("")}
@@ -2814,5 +2813,5 @@ function syncRoundCounters() {
       el.readOnly=false;el.removeAttribute("aria-readonly");delete el.dataset.roundAuto;delete el.dataset.manualValue;el.title="Saisie manuelle sans rounds";
     }
   }
-  const help=$("roundCountersHelp");if(help)help.textContent=automatic?"Automatique : Entry K / D, plants, defuses et clutches sont calculés depuis les rounds saisis et ne sont plus à saisir ici. Complète tous les rounds pour obtenir les totaux du match. K/D attaque/défense reste manuel.":"Sans rounds : saisis manuellement Entry K / D, plants, defuses et clutches. Dès qu’un round est ajouté, ces cinq totaux sont calculés automatiquement. K/D attaque/défense reste manuel.";
+  const help=$("roundCountersHelp");if(help)help.textContent=automatic?"Entry K / D, plants, defuses et clutches sont calculés depuis les rounds saisis. Complète tous les rounds pour obtenir les totaux du match. K/D attaque/défense reste manuel.":"Renseigne les rounds pour calculer automatiquement Entry K / D, plants, defuses et clutches. Sans rounds, les anciens totaux enregistrés sont conservés. K/D attaque/défense reste manuel.";
 }
