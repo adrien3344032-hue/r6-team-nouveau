@@ -713,6 +713,25 @@ function handleAvailabilityStatusClick(event) {
   refreshAvailabilityColors();
 }
 
+function availabilitySavedLabel(key) {
+  const row = availability?.[key] || {}, value = row._savedAt;
+  let date;
+  try {
+    date = value?.toDate ? value.toDate() : value?.toMillis ? new Date(value.toMillis()) : value && typeof value.seconds === "number" ? new Date(value.seconds*1000) : null;
+  } catch { date = null; }
+  if (!date || !Number.isFinite(date.getTime())) return "Date non renseignée";
+  const zone = {timeZone:"Europe/Paris"};
+  const day = date.toLocaleDateString("fr-FR", {...zone,day:"2-digit",month:"2-digit",year:"numeric"});
+  const hour = date.toLocaleTimeString("fr-FR", {...zone,hour:"2-digit",minute:"2-digit"});
+  const owner = players.find(player => safeKey(player.uid) === key);
+  const author = row._savedBy && row._savedBy !== owner?.uid ? ` · par ${row._savedByName || nameByUid(row._savedBy)}` : "";
+  return `Enregistré le ${day} à ${hour}${author}`;
+}
+
+function refreshAvailabilitySavedLabels() {
+  $("availabilityTableWrap")?.querySelectorAll("[data-availability-saved]").forEach(el => {el.textContent=availabilitySavedLabel(el.dataset.availabilitySaved);});
+}
+
 function renderAvailability() {
   if (!$("availabilityTableWrap")) return;
   const wrap = $("availabilityTableWrap");
@@ -734,6 +753,7 @@ function renderAvailability() {
       el.dataset.syncedValue = remote;
     });
     refreshAvailabilityColors();
+    refreshAvailabilitySavedLabels();
     return;
   }
   const canEditAll = currentProfile?.role === "admin";
@@ -745,7 +765,7 @@ function renderAvailability() {
     const playerKey = safeKey(player.uid || player.email || player.name || player.id);
     const ownsLine = (player.uid && player.uid === currentUser?.uid) || (currentEmail && (player.email || "").toLowerCase() === currentEmail);
     const editable = canEditAll || (canEditOwn && ownsLine);
-    html += `<tr><th class="availability-player"><span>${escapeHtml(player.name || "Joueur")}</span></th>`;
+    html += `<tr><th class="availability-player"><span>${escapeHtml(player.name || "Joueur")}</span><small class="availability-save-stamp" data-availability-saved="${escapeAttr(playerKey)}" title="Heure de Paris">${escapeHtml(availabilitySavedLabel(playerKey))}</small></th>`;
     for (const day of days) {
       const cell = availability?.[playerKey]?.[day] || { status: "", note: "" };
       const statusClass = availabilityStatusClass(cell.status);
@@ -774,6 +794,8 @@ function renderAvailability() {
 }
 
 async function saveAvailability() {
+  if (!currentUser || !currentProfile?.teamId || !["admin","player"].includes(currentProfile.role)) return;
+  const teamId = currentProfile.teamId;
   const next = {};
   let changed = false;
   document.querySelectorAll("#availabilityTableWrap [data-player]").forEach((el) => {
@@ -786,14 +808,16 @@ async function saveAvailability() {
     if (!next[player][day]) next[player][day] = {};
     next[player][day][field] = el.value;
   });
-  if (!changed) {
-    setMsg("availabilityMsg", "Aucune modification à enregistrer.");
-    return;
+  // Pressing Save also confirms unchanged availability, without stamping other players.
+  if (!changed) next[safeKey(currentUser.uid)] = {};
+  for (const row of Object.values(next)) {
+    row._savedAt = serverTimestamp(); row._savedBy = currentUser.uid; row._savedByName = currentProfile.name || "Compte";
   }
   try {
-    await setDoc(teamDoc("availability", "week"), { values: next, updatedAt: serverTimestamp() }, { merge: true });
-    await logActivity("availability", "Disponibilités mises à jour");
-    setMsg("availabilityMsg", "Disponibilités enregistrées pour tout le monde.");
+    await setDoc(doc(db,"teams",teamId,"availability","week"), { values: next, updatedAt: serverTimestamp() }, { merge: true });
+    if (currentProfile?.teamId !== teamId) return;
+    await logActivity("availability", changed ? "Disponibilités mises à jour" : "Disponibilités confirmées");
+    setMsg("availabilityMsg", changed ? "Disponibilités enregistrées. La date et l’heure sont actualisées." : "Disponibilités confirmées. La date et l’heure sont actualisées.");
   } catch (err) {
     setMsg("availabilityMsg", humanError(err));
   }
@@ -2092,7 +2116,8 @@ let annotationUndo = [];
 let annotationRedo = [];
 let savingAnnotations = false;
 const ANNOTATION_LIMIT = 80;
-const ANNOTATION_MARGIN = 0.25;
+const ANNOTATION_MARGIN = 1;
+const ANNOTATION_IMAGE_FIT_SCALE = 1.5;
 const ANNOTATION_BOARD_SCALE = 1 + 2 * ANNOTATION_MARGIN;
 const ANNOTATION_BYTES = 30000;
 
@@ -2114,7 +2139,7 @@ function decodeAnnotations(raw) {
     : { id:item.id, type:item.type, x:item.x, y:item.y, x2:item.x2, y2:item.y2, color:item.color });
 }
 function annotationsDirty() {
-  return Boolean(openStratImage && (annotationGesture || JSON.stringify(imageAnnotations) !== openStratImage.annotationsBaseline));
+  return Boolean(openStratImage && ((annotationGesture && annotationGesture.kind !== "pan") || JSON.stringify(imageAnnotations) !== openStratImage.annotationsBaseline));
 }
 function stratEditorDirty() { return stratNotesDirty() || annotationsDirty(); }
 function canEditAnnotations() {
@@ -2128,7 +2153,7 @@ function annotationCheckpoint(before = imageAnnotations) {
   annotationRedo = [];
 }
 function setAnnotationTool(tool) {
-  if (!canEditAnnotations() || annotationGesture || !["select", "text", "arrow"].includes(tool)) return;
+  if (!canEditAnnotations() || annotationGesture || !["select", "text", "arrow", "pan"].includes(tool)) return;
   annotationTool = tool;
   if (tool !== "select") selectedAnnotationId = "";
   annotationGesture = null;
@@ -2150,6 +2175,11 @@ function newAnnotationId() { return "ann_" + Date.now().toString(36) + "_" + Mat
 function annotationColor() { return /^#[0-9a-fA-F]{6}$/.test($("annotationColor").value) ? $("annotationColor").value : "#ffcc00"; }
 function annotationPointerDown(event) {
   if (!canEditAnnotations() || event.button !== 0 || (annotationGesture && annotationGesture.pointerId !== event.pointerId)) return;
+  if (annotationTool === "pan") {
+    const stage = $("stratImageStage");
+    annotationGesture = {kind:"pan",pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,scrollLeft:stage.scrollLeft || 0,scrollTop:stage.scrollTop || 0};
+    event.preventDefault(); $("annotationOverlay").setPointerCapture?.(event.pointerId); updateAnnotationControls(); return;
+  }
   const point = annotationPoint(event);
   const before = annotationCopy(imageAnnotations);
   const target = event.target.closest?.("[data-annotation-id]");
@@ -2176,6 +2206,12 @@ function annotationPointerDown(event) {
 }
 function annotationPointerMove(event) {
   if (!canEditAnnotations() || !annotationGesture || event.pointerId !== annotationGesture.pointerId) return;
+  if (annotationGesture.kind === "pan") {
+    const stage = $("stratImageStage");
+    stage.scrollLeft = Math.max(0,annotationGesture.scrollLeft - (event.clientX - annotationGesture.startX));
+    stage.scrollTop = Math.max(0,annotationGesture.scrollTop - (event.clientY - annotationGesture.startY));
+    event.preventDefault(); return;
+  }
   const point = annotationPoint(event), drag = annotationGesture;
   const index = imageAnnotations.findIndex(item => item.id === drag.item.id);
   if (index < 0) return;
@@ -2187,6 +2223,12 @@ function annotationPointerMove(event) {
 function annotationPointerEnd(event, cancelled = false) {
   if (!annotationGesture || event.pointerId !== annotationGesture.pointerId) return;
   const drag = annotationGesture;
+  if (drag.kind === "pan") {
+    if (!cancelled) annotationPointerMove(event);
+    annotationGesture = null;
+    const overlay = $("annotationOverlay"); if(overlay.hasPointerCapture?.(event.pointerId))overlay.releasePointerCapture(event.pointerId);
+    updateAnnotationControls(); return;
+  }
   if (!cancelled) annotationPointerMove(event);
   const item = selectedAnnotation();
   if (cancelled || (drag.creating && item && Math.hypot(item.x2-item.x, item.y2-item.y) < .01)) {
@@ -2249,7 +2291,7 @@ function updateAnnotationControls() {
   const admin = currentProfile?.role === "admin", editable = canEditAnnotations();
   editor.classList.toggle("hidden", !admin);
   const item = selectedAnnotation();
-  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"]]) {
+  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"],["annotationPanTool","pan"]]) {
     $(id).classList.toggle("annotation-tool-active", annotationTool === tool); $(id).setAttribute("aria-pressed",String(annotationTool === tool));
   }
   for (const el of editor.querySelectorAll("button,input,textarea,select")) el.disabled = !editable;
@@ -2266,8 +2308,9 @@ function updateAnnotationControls() {
     }
   }
   $("annotationOverlay").classList.toggle("can-annotate", editable);
-  $("annotationOverlay").classList.toggle("drawing-tool", editable && annotationTool !== "select");
-  $("annotationHelp").textContent = annotationTool === "text" ? "Clique sur l’image ou dans la marge autour pour placer ton texte, puis déplace-le en mode Sélection." : annotationTool === "arrow" ? "Clique puis fais glisser pour tracer une flèche, sur l’image ou dans les marges." : "Sélectionne puis déplace un texte ou une flèche. Les deux poignées d’une flèche déplacent ses extrémités.";
+  $("annotationOverlay").classList.toggle("drawing-tool", editable && ["text", "arrow"].includes(annotationTool));
+  $("annotationOverlay").classList.toggle("panning-tool", editable && annotationTool === "pan");
+  $("annotationHelp").textContent = annotationTool === "pan" ? "Fais glisser la vue pour explorer la grande zone de travail. Tes textes et flèches restent en place." : annotationTool === "text" ? "Clique sur l’image ou dans la marge autour pour placer ton texte, puis déplace-le en mode Sélection." : annotationTool === "arrow" ? "Clique puis fais glisser pour tracer une flèche, sur l’image ou dans les marges." : "Sélectionne puis déplace un texte ou une flèche. Les deux poignées d’une flèche déplacent ses extrémités.";
   $("annotationSaveBtn").disabled = !editable || !annotationsDirty() || Boolean(annotationGesture);
   const message = $("annotationsMsg").textContent;
   if (annotationsDirty() && (!message || message.startsWith("Annotations enregistrées"))) setMsg("annotationsMsg", "Modifications non enregistrées.");
@@ -2276,13 +2319,24 @@ function updateAnnotationControls() {
 function fitStratCanvas() {
   const stage = $("stratImageStage"), image = $("imageModalImg"), canvas = $("stratCanvas"), viewport = $("stratCanvasViewport");
   if (!stage || !canvas || !viewport || !image) return;
+  const oldWidth = parseFloat(viewport.style.width) || 0, oldHeight = parseFloat(viewport.style.height) || 0;
+  const mustCenter = !oldWidth || !oldHeight || openStratImage?.viewportNeedsCenter;
+  const center = (scroll, client, offset, length) => Math.max(0,Math.min(1,((scroll || 0)+(client || 0)/2-(Number.isFinite(offset)?offset:16))/Math.max(1,length)));
+  const focusX = mustCenter ? .5 : center(stage.scrollLeft,stage.clientWidth,viewport.offsetLeft,oldWidth);
+  const focusY = mustCenter ? .5 : center(stage.scrollTop,stage.clientHeight,viewport.offsetTop,oldHeight);
   const ratio = (image.naturalWidth || 1000) / (image.naturalHeight || 700);
-  const width = Math.max(100,Math.min(image.naturalWidth || 1000, ((stage.clientWidth || 1000)-32)/ANNOTATION_BOARD_SCALE, (((stage.clientHeight || 700)-32)/ANNOTATION_BOARD_SCALE)*ratio));
-  canvas.style.width=(width*ANNOTATION_BOARD_SCALE)+"px"; canvas.style.height=(width/ratio*ANNOTATION_BOARD_SCALE)+"px";
+  // Keep the map at its previous useful size; enlarge the scrollable workspace instead.
+  const width = Math.max(100,Math.min(image.naturalWidth || 1000,((stage.clientWidth || 1000)-32)/ANNOTATION_IMAGE_FIT_SCALE,(((stage.clientHeight || 700)-32)/ANNOTATION_IMAGE_FIT_SCALE)*ratio));
+  const boardWidth=width*ANNOTATION_BOARD_SCALE, boardHeight=width/ratio*ANNOTATION_BOARD_SCALE;
+  canvas.style.width=boardWidth+"px"; canvas.style.height=boardHeight+"px";
   canvas.style.transform=`scale(${imageZoom})`;
-  viewport.style.width=(width*ANNOTATION_BOARD_SCALE*imageZoom)+"px"; viewport.style.height=(width/ratio*ANNOTATION_BOARD_SCALE*imageZoom)+"px";
+  viewport.style.width=(boardWidth*imageZoom)+"px"; viewport.style.height=(boardHeight*imageZoom)+"px";
+  stage.scrollLeft=Math.max(0,focusX*boardWidth*imageZoom+(Number(viewport.offsetLeft)||16)-(stage.clientWidth || 0)/2);
+  stage.scrollTop=Math.max(0,focusY*boardHeight*imageZoom+(Number(viewport.offsetTop)||16)-(stage.clientHeight || 0)/2);
+  if(openStratImage && stage.clientWidth > 0 && stage.clientHeight > 0)openStratImage.viewportNeedsCenter=false;
   renderAnnotations();
 }
+
 function loadImageAnnotations(item) {
   const raw = String(item.annotationData || "");
   openStratImage.annotationData = raw; openStratImage.annotationsError = "";
@@ -2327,7 +2381,7 @@ async function saveImageAnnotations() {
 function initAnnotationEditor() {
   if ($("annotationOverlay").dataset.bound) return;
   $("annotationOverlay").dataset.bound="true";
-  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"]]) $(id).addEventListener("click",()=>setAnnotationTool(tool));
+  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"],["annotationPanTool","pan"]]) $(id).addEventListener("click",()=>setAnnotationTool(tool));
   for (const id of ["annotationText","annotationColor","annotationSize"]) $(id).addEventListener("input",editSelectedAnnotation);
   $("annotationDeleteBtn").addEventListener("click",deleteSelectedAnnotation);
   $("annotationUndoBtn").addEventListener("click",()=>annotationHistory("undo"));
@@ -2378,7 +2432,7 @@ window.openStratImage = (id) => {
   const item = stratById(id);
   if (!item?.imageData) return;
   if (stratEditorDirty() && !confirm("Abandonner le texte et les annotations non enregistrés pour ouvrir cette image ?")) return;
-  openStratImage = { id, teamId: currentProfile.teamId, notes: String(item.notes || "") };
+  openStratImage = { id, teamId: currentProfile.teamId, notes: String(item.notes || ""), viewportNeedsCenter:true };
   initAnnotationEditor();
   loadImageAnnotations(item);
   $("imageModalTitle").textContent = item.name || "Image";

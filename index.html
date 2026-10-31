@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>R6 Team — Matchs & Disponibilités</title>
-  <link rel="stylesheet" href="styles.css?v=20261031-marges" />
+  <link rel="stylesheet" href="styles.css?v=20261031-zone-dispos" />
 </head>
 <body>
   <div id="app">
@@ -338,8 +338,8 @@
             <div class="image-modal-stage" id="stratImageStage"><div id="stratCanvasViewport" class="strat-canvas-viewport"><div id="stratCanvas" class="strat-canvas"><img id="imageModalImg" alt="Stratégie" draggable="false" /><svg id="annotationOverlay" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Annotations de la stratégie" tabindex="0"></svg></div></div></div>
             <aside class="strat-notes-panel">
               <div id="annotationTools" class="hidden">
-                <h3>Annotations et marges</h3><p class="muted">Place les consignes sur l’image ou dans l’espace autour. Les flèches peuvent relier les deux.</p>
-                <div class="annotation-buttons"><button id="annotationSelectTool" type="button" class="secondary" aria-pressed="true">Sélection</button><button id="annotationTextTool" type="button" class="secondary" aria-pressed="false">Texte</button><button id="annotationArrowTool" type="button" class="secondary" aria-pressed="false">Flèche</button></div>
+                <h3>Annotations et marges</h3><p class="muted">Grande zone de travail : écris autour de l’image et relie tes consignes avec des flèches. Utilise Main pour déplacer la vue.</p>
+                <div class="annotation-buttons"><button id="annotationSelectTool" type="button" class="secondary" aria-pressed="true">Sélection</button><button id="annotationPanTool" type="button" class="secondary" aria-pressed="false">Main</button><button id="annotationTextTool" type="button" class="secondary" aria-pressed="false">Texte</button><button id="annotationArrowTool" type="button" class="secondary" aria-pressed="false">Flèche</button></div>
                 <label for="annotationText">Texte sélectionné / nouvelle consigne</label>
                 <textarea id="annotationText" rows="3" maxlength="1000" placeholder="Ex. Adrien tient ici"></textarea>
                 <div class="annotation-settings"><div><label for="annotationColor">Couleur</label><input id="annotationColor" type="color" value="#ffcc00" /></div><div><label for="annotationSize">Taille du texte</label><select id="annotationSize"><option value="20">Petite</option><option value="28" selected>Moyenne</option><option value="40">Grande</option><option value="56">Très grande</option></select></div></div>
@@ -482,6 +482,6 @@
   </div>
 
   <script>window.R6_FIREBASE_CONFIG = {apiKey:"AIzaSyBGy9d4d3Wbhv44enQN535hA82um_bkxgw",authDomain:"r6-team-nouveau.firebaseapp.com",projectId:"r6-team-nouveau",storageBucket:"r6-team-nouveau.firebasestorage.app",messagingSenderId:"1083540215251",appId:"1:1083540215251:web:2a6526913e922fae00cb26"};</script>
-  <script type="module" src="app.js?v=20261031-marges"></script>
+  <script type="module" src="app.js?v=20261031-zone-dispos"></script>
 </body>
 </html>

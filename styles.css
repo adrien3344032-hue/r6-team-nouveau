@@ -1163,4 +1163,8 @@ body.light-theme .breadcrumb, body.light-theme .strat-card { background: rgba(15
 
 /* Marge de travail : les coordonnées historiques 0..1 restent liées à l’image. */
 .strat-canvas { background-color: #101a2c; background-image: radial-gradient(rgba(148,163,184,.24) 1px, transparent 1px); background-size: 20px 20px; border-radius: 12px; }
-#stratCanvas #imageModalImg { position: absolute; left: 16.6666666667%; top: 16.6666666667%; width: 66.6666666667%; height: 66.6666666667%; }
+#stratCanvas #imageModalImg { position: absolute; left: 33.3333333333%; top: 33.3333333333%; width: 33.3333333333%; height: 33.3333333333%; }
+
+#annotationOverlay.panning-tool, #annotationOverlay.panning-tool [data-annotation-id] { cursor: grab; touch-action: none; }
+#annotationOverlay.panning-tool:active, #annotationOverlay.panning-tool:active [data-annotation-id] { cursor: grabbing; }
+.availability-save-stamp { display: block; margin-top: 7px; color: var(--muted); font-size: .66rem; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
