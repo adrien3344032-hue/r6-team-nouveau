@@ -2083,6 +2083,273 @@ window.openStratFolder = (id) => {
   renderStrats();
 };
 
+// Coordinates are fractions of the original image, independent of zoom and viewport.
+let imageAnnotations = [];
+let annotationTool = "select";
+let selectedAnnotationId = "";
+let annotationGesture = null;
+let annotationUndo = [];
+let annotationRedo = [];
+let savingAnnotations = false;
+const ANNOTATION_LIMIT = 80;
+const ANNOTATION_BYTES = 30000;
+
+function annotationCopy(value) { return JSON.parse(JSON.stringify(value)); }
+function annotationNumber(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
+function decodeAnnotations(raw) {
+  const items = raw ? JSON.parse(raw) : [];
+  if (!Array.isArray(items) || items.length > ANNOTATION_LIMIT) throw new Error("Format d’annotations invalide.");
+  const ids = new Set();
+  for (const item of items) {
+    if (!item || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.id) || ids.has(item.id)) throw new Error("Identifiant d’annotation invalide.");
+    ids.add(item.id);
+    if (!["text", "arrow"].includes(item.type) || !annotationNumber(item.x) || !annotationNumber(item.y) || !/^#[0-9a-fA-F]{6}$/.test(item.color)) throw new Error("Annotation invalide.");
+    if (item.type === "text" && (typeof item.text !== "string" || !item.text.trim() || item.text.length > 1000 || !Number.isFinite(item.size) || item.size < 16 || item.size > 64)) throw new Error("Texte d’annotation invalide.");
+    if (item.type === "arrow" && (!annotationNumber(item.x2) || !annotationNumber(item.y2))) throw new Error("Flèche invalide.");
+  }
+  return items.map(item => item.type === "text"
+    ? { id:item.id, type:item.type, x:item.x, y:item.y, color:item.color, text:item.text, size:item.size }
+    : { id:item.id, type:item.type, x:item.x, y:item.y, x2:item.x2, y2:item.y2, color:item.color });
+}
+function annotationsDirty() {
+  return Boolean(openStratImage && (annotationGesture || JSON.stringify(imageAnnotations) !== openStratImage.annotationsBaseline));
+}
+function stratEditorDirty() { return stratNotesDirty() || annotationsDirty(); }
+function canEditAnnotations() {
+  return Boolean(openStratImage && currentProfile?.role === "admin" && currentProfile.teamId === openStratImage.teamId && !openStratImage.annotationsError && !savingAnnotations);
+}
+function selectedAnnotation() { return imageAnnotations.find(item => item.id === selectedAnnotationId); }
+function annotationCheckpoint(before = imageAnnotations) {
+  const previous = JSON.stringify(before);
+  if (annotationUndo.at(-1) !== previous) annotationUndo.push(previous);
+  if (annotationUndo.length > 30) annotationUndo.shift();
+  annotationRedo = [];
+}
+function setAnnotationTool(tool) {
+  if (!canEditAnnotations() || annotationGesture || !["select", "text", "arrow"].includes(tool)) return;
+  annotationTool = tool;
+  if (tool !== "select") selectedAnnotationId = "";
+  annotationGesture = null;
+  updateAnnotationControls();
+}
+function annotationPoint(event) {
+  const rect = $("stratCanvas").getBoundingClientRect();
+  return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))) };
+}
+function moveAnnotation(item, dx, dy) {
+  const xs = item.type === "arrow" ? [item.x, item.x2] : [item.x];
+  const ys = item.type === "arrow" ? [item.y, item.y2] : [item.y];
+  dx = Math.max(-Math.min(...xs), Math.min(1 - Math.max(...xs), dx));
+  dy = Math.max(-Math.min(...ys), Math.min(1 - Math.max(...ys), dy));
+  return { ...item, x: item.x + dx, y: item.y + dy, ...(item.type === "arrow" ? { x2:item.x2 + dx, y2:item.y2 + dy } : {}) };
+}
+function newAnnotationId() { return "ann_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,10); }
+function annotationColor() { return /^#[0-9a-fA-F]{6}$/.test($("annotationColor").value) ? $("annotationColor").value : "#ffcc00"; }
+function annotationPointerDown(event) {
+  if (!canEditAnnotations() || event.button !== 0 || (annotationGesture && annotationGesture.pointerId !== event.pointerId)) return;
+  const point = annotationPoint(event);
+  const before = annotationCopy(imageAnnotations);
+  const target = event.target.closest?.("[data-annotation-id]");
+  if (annotationTool === "select" && target) {
+    selectedAnnotationId = target.getAttribute("data-annotation-id");
+    const item = selectedAnnotation();
+    if (!item) return;
+    annotationGesture = { pointerId:event.pointerId, before, origin:point, item:annotationCopy(item), handle:event.target.getAttribute?.("data-handle") || "move" };
+  } else if (annotationTool === "text") {
+    if (imageAnnotations.length >= ANNOTATION_LIMIT) { setMsg("annotationsMsg", "Maximum 80 annotations par image."); return; }
+    annotationCheckpoint();
+    const item = { id:newAnnotationId(), type:"text", ...point, color:annotationColor(), text:$("annotationText").value || "Consigne", size:Number($("annotationSize").value) || 28 };
+    imageAnnotations.push(item); selectedAnnotationId = item.id; annotationTool = "select";
+    event.preventDefault(); renderAnnotations(); $("annotationText").focus?.(); return;
+  } else if (annotationTool === "arrow") {
+    if (imageAnnotations.length >= ANNOTATION_LIMIT) { setMsg("annotationsMsg", "Maximum 80 annotations par image."); return; }
+    const item = { id:newAnnotationId(), type:"arrow", ...point, x2:point.x, y2:point.y, color:annotationColor() };
+    imageAnnotations.push(item); selectedAnnotationId = item.id;
+    annotationGesture = { pointerId:event.pointerId, before, origin:point, item, handle:"end", creating:true };
+  } else { selectedAnnotationId = ""; renderAnnotations(); return; }
+  event.preventDefault();
+  $("annotationOverlay").setPointerCapture?.(event.pointerId);
+  renderAnnotations();
+}
+function annotationPointerMove(event) {
+  if (!canEditAnnotations() || !annotationGesture || event.pointerId !== annotationGesture.pointerId) return;
+  const point = annotationPoint(event), drag = annotationGesture;
+  const index = imageAnnotations.findIndex(item => item.id === drag.item.id);
+  if (index < 0) return;
+  if (drag.handle === "start") imageAnnotations[index] = { ...drag.item, x:point.x, y:point.y };
+  else if (drag.handle === "end") imageAnnotations[index] = { ...drag.item, x2:point.x, y2:point.y };
+  else imageAnnotations[index] = moveAnnotation(drag.item, point.x - drag.origin.x, point.y - drag.origin.y);
+  event.preventDefault(); renderAnnotations();
+}
+function annotationPointerEnd(event, cancelled = false) {
+  if (!annotationGesture || event.pointerId !== annotationGesture.pointerId) return;
+  const drag = annotationGesture;
+  if (!cancelled) annotationPointerMove(event);
+  const item = selectedAnnotation();
+  if (cancelled || (drag.creating && item && Math.hypot(item.x2-item.x, item.y2-item.y) < .01)) {
+    imageAnnotations = drag.before; selectedAnnotationId = "";
+  } else if (JSON.stringify(drag.before) !== JSON.stringify(imageAnnotations)) annotationCheckpoint(drag.before);
+  annotationGesture = null;
+  const svg = $("annotationOverlay");
+  if (svg.hasPointerCapture?.(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+  if (drag.creating) annotationTool = "select";
+  renderAnnotations();
+}
+function editSelectedAnnotation() {
+  if (!canEditAnnotations() || annotationGesture) return;
+  const item = selectedAnnotation();
+  if (!item) return;
+  const next = { ...item, color:annotationColor() };
+  if (item.type === "text") { next.text = $("annotationText").value.slice(0,1000); next.size = Number($("annotationSize").value) || 28; }
+  if (JSON.stringify(next) === JSON.stringify(item)) return;
+  annotationCheckpoint(); imageAnnotations[imageAnnotations.indexOf(item)] = next; renderAnnotations();
+}
+function deleteSelectedAnnotation() {
+  if (!canEditAnnotations() || annotationGesture || !selectedAnnotation()) return;
+  annotationCheckpoint(); imageAnnotations = imageAnnotations.filter(item => item.id !== selectedAnnotationId); selectedAnnotationId = ""; renderAnnotations();
+}
+function annotationHistory(direction) {
+  if (!canEditAnnotations() || annotationGesture) return;
+  const from = direction === "undo" ? annotationUndo : annotationRedo;
+  const to = direction === "undo" ? annotationRedo : annotationUndo;
+  if (!from.length) return;
+  to.push(JSON.stringify(imageAnnotations)); imageAnnotations = JSON.parse(from.pop()); selectedAnnotationId = ""; renderAnnotations();
+}
+function annotationViewHeight() {
+  const image = $("imageModalImg");
+  return 1000 * (image?.naturalHeight || 700) / (image?.naturalWidth || 1000);
+}
+function renderAnnotations() {
+  const overlay = $("annotationOverlay"); if (!overlay) return;
+  const height = annotationViewHeight();
+  overlay.setAttribute("viewBox", `0 0 1000 ${height}`);
+  overlay.innerHTML = imageAnnotations.map(item => {
+    const selected = item.id === selectedAnnotationId && canEditAnnotations();
+    const x=item.x*1000, y=item.y*height;
+    let shape;
+    if (item.type === "text") {
+      const lines = item.text.split("\n");
+      shape = `<text x="${x}" y="${y}" fill="${item.color}" font-size="${item.size}" font-family="Arial, sans-serif" font-weight="700" dominant-baseline="hanging" stroke="#101827" stroke-width="${selected ? 2 : 1.2}" paint-order="stroke" style="white-space:pre">${lines.map((line,index) => `<tspan x="${x}" dy="${index ? '1.2em' : 0}">${escapeHtml(line || " ")}</tspan>`).join("")}</text>`;
+      if (selected) shape += `<circle cx="${x}" cy="${y}" r="6" fill="#ffffff" stroke="${item.color}" stroke-width="2"/>`;
+    } else {
+      const x2=item.x2*1000, y2=item.y2*height, angle=Math.atan2(y2-y,x2-x), size=15;
+      const a=[x2-size*Math.cos(angle-.5),y2-size*Math.sin(angle-.5)], b=[x2-size*Math.cos(angle+.5),y2-size*Math.sin(angle+.5)];
+      shape = `<line x1="${x}" y1="${y}" x2="${x2}" y2="${y2}" stroke="transparent" stroke-width="24" pointer-events="stroke"/><line x1="${x}" y1="${y}" x2="${x2}" y2="${y2}" stroke="${item.color}" stroke-width="4" stroke-linecap="round"/><polygon points="${x2},${y2} ${a.join(',')} ${b.join(',')}" fill="${item.color}"/>`;
+      if (selected) shape += `<circle data-handle="start" cx="${x}" cy="${y}" r="9" fill="#fff" stroke="${item.color}" stroke-width="3"/><circle data-handle="end" cx="${x2}" cy="${y2}" r="9" fill="#fff" stroke="${item.color}" stroke-width="3"/>`;
+    }
+    return `<g data-annotation-id="${item.id}" class="${selected ? 'annotation-selected' : ''}"><title>${escapeHtml(item.type === "text" ? item.text : "Flèche")}</title>${shape}</g>`;
+  }).join("");
+  updateAnnotationControls();
+}
+function updateAnnotationControls() {
+  const editor = $("annotationTools"); if (!editor) return;
+  const admin = currentProfile?.role === "admin", editable = canEditAnnotations();
+  editor.classList.toggle("hidden", !admin);
+  const item = selectedAnnotation();
+  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"]]) {
+    $(id).classList.toggle("annotation-tool-active", annotationTool === tool); $(id).setAttribute("aria-pressed",String(annotationTool === tool));
+  }
+  for (const el of editor.querySelectorAll("button,input,textarea,select")) el.disabled = !editable;
+  $("annotationDeleteBtn").disabled = !editable || !item;
+  $("annotationUndoBtn").disabled = !editable || !annotationUndo.length;
+  $("annotationRedoBtn").disabled = !editable || !annotationRedo.length;
+  $("annotationText").disabled = !editable || (item?.type === "arrow");
+  $("annotationSize").disabled = !editable || (item?.type === "arrow");
+  if (item) {
+    $("annotationColor").value = item.color;
+    if (item.type === "text") {
+      if ($("annotationText").value !== item.text) $("annotationText").value = item.text;
+      $("annotationSize").value = String(item.size);
+    }
+  }
+  $("annotationOverlay").classList.toggle("can-annotate", editable);
+  $("annotationOverlay").classList.toggle("drawing-tool", editable && annotationTool !== "select");
+  $("annotationHelp").textContent = annotationTool === "text" ? "Clique sur l’image pour placer ton texte, puis déplace-le en mode Sélection." : annotationTool === "arrow" ? "Clique puis fais glisser pour tracer une flèche." : "Sélectionne puis déplace un texte ou une flèche. Les deux poignées d’une flèche déplacent ses extrémités.";
+  $("annotationSaveBtn").disabled = !editable || !annotationsDirty() || Boolean(annotationGesture);
+  const message = $("annotationsMsg").textContent;
+  if (annotationsDirty() && (!message || message.startsWith("Annotations enregistrées"))) setMsg("annotationsMsg", "Modifications non enregistrées.");
+  else if (!annotationsDirty() && message === "Modifications non enregistrées.") setMsg("annotationsMsg", "");
+}
+function fitStratCanvas() {
+  const stage = $("stratImageStage"), image = $("imageModalImg"), canvas = $("stratCanvas"), viewport = $("stratCanvasViewport");
+  if (!stage || !canvas || !viewport || !image) return;
+  const ratio = (image.naturalWidth || 1000) / (image.naturalHeight || 700);
+  const width = Math.max(100,Math.min(image.naturalWidth || 1000, (stage.clientWidth || 1000)-32, ((stage.clientHeight || 700)-32)*ratio));
+  canvas.style.width=width+"px"; canvas.style.height=(width/ratio)+"px";
+  canvas.style.transform=`scale(${imageZoom})`;
+  viewport.style.width=(width*imageZoom)+"px"; viewport.style.height=(width/ratio*imageZoom)+"px";
+  renderAnnotations();
+}
+function loadImageAnnotations(item) {
+  const raw = String(item.annotationData || "");
+  openStratImage.annotationData = raw; openStratImage.annotationsError = "";
+  try { imageAnnotations = decodeAnnotations(raw); }
+  catch (err) { imageAnnotations = []; openStratImage.annotationsError = err.message; }
+  openStratImage.annotationsBaseline = JSON.stringify(imageAnnotations);
+  annotationGesture = null; selectedAnnotationId = ""; annotationUndo=[]; annotationRedo=[]; annotationTool="select";
+  setMsg("annotationsMsg", openStratImage.annotationsError ? "Les annotations enregistrées sont invalides. Elles sont conservées, mais l’édition est bloquée." : "");
+  renderAnnotations();
+}
+function syncImageAnnotations(item) {
+  if (!openStratImage) return;
+  const raw = String(item.annotationData || "");
+  if (raw === openStratImage.annotationData) { updateAnnotationControls(); return; }
+  if (!annotationsDirty()) loadImageAnnotations(item);
+  else setMsg("annotationsMsg", "Les annotations ont changé ailleurs. Ton brouillon est conservé ; copie tes consignes si nécessaire, puis recharge les annotations.");
+}
+async function saveImageAnnotations() {
+  if (!canEditAnnotations() || annotationGesture) return;
+  const context = { ...openStratImage }, submitted = JSON.stringify(imageAnnotations);
+  try {
+    decodeAnnotations(submitted);
+    if (new TextEncoder().encode(submitted).length > ANNOTATION_BYTES) throw new Error("Annotations trop volumineuses : raccourcis les textes ou supprime des éléments (30 Ko maximum).");
+  } catch (err) { setMsg("annotationsMsg", humanError(err)); return; }
+  savingAnnotations=true; updateAnnotationControls();
+  try {
+    const ref = doc(db,"teams",context.teamId,"strats",context.id);
+    await runTransaction(db,async transaction => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) throw new Error("Cette image a été supprimée.");
+      if (String(snap.data().annotationData || "") !== context.annotationData) throw new Error("Les annotations ont été modifiées ailleurs. Ton brouillon est conservé ; recharge-les avant de réessayer.");
+      transaction.update(ref,{ annotationData:submitted, annotationsUpdatedAt:serverTimestamp(), annotationsUpdatedBy:currentUser.uid });
+    });
+    if (openStratImage?.id === context.id && openStratImage.teamId === context.teamId) {
+      openStratImage.annotationData=submitted; openStratImage.annotationsBaseline=submitted;
+      setMsg("annotationsMsg","Annotations enregistrées et partagées avec l’équipe.");
+    }
+    await logActivity("strat","Annotations de stratégie mises à jour");
+  } catch (err) { if (openStratImage?.id===context.id) setMsg("annotationsMsg",humanError(err)); }
+  finally { savingAnnotations=false; updateAnnotationControls(); }
+}
+function initAnnotationEditor() {
+  if ($("annotationOverlay").dataset.bound) return;
+  $("annotationOverlay").dataset.bound="true";
+  for (const [id,tool] of [["annotationSelectTool","select"],["annotationTextTool","text"],["annotationArrowTool","arrow"]]) $(id).addEventListener("click",()=>setAnnotationTool(tool));
+  for (const id of ["annotationText","annotationColor","annotationSize"]) $(id).addEventListener("input",editSelectedAnnotation);
+  $("annotationDeleteBtn").addEventListener("click",deleteSelectedAnnotation);
+  $("annotationUndoBtn").addEventListener("click",()=>annotationHistory("undo"));
+  $("annotationRedoBtn").addEventListener("click",()=>annotationHistory("redo"));
+  $("annotationSaveBtn").addEventListener("click",saveImageAnnotations);
+  $("annotationReloadBtn").addEventListener("click",()=>{
+    if (!openStratImage || savingAnnotations) return;
+    if (annotationsDirty() && !confirm("Abandonner les annotations non enregistrées et recharger la version publiée ?")) return;
+    const item=stratById(openStratImage.id); if(item)loadImageAnnotations(item);
+  });
+  const svg=$("annotationOverlay");
+  svg.addEventListener("pointerdown",annotationPointerDown);
+  svg.addEventListener("pointermove",annotationPointerMove);
+  svg.addEventListener("pointerup",event=>annotationPointerEnd(event));
+  svg.addEventListener("pointercancel",event=>annotationPointerEnd(event,true));
+  svg.addEventListener("lostpointercapture",event=>{if(annotationGesture)annotationPointerEnd(event,true);});
+  svg.addEventListener("keydown",event=>{
+    if (!canEditAnnotations()) return;
+    if (["Delete","Backspace"].includes(event.key)) {event.preventDefault();deleteSelectedAnnotation();}
+    if (event.key==="Escape") { if(annotationGesture)annotationPointerEnd({pointerId:annotationGesture.pointerId},true);selectedAnnotationId="";annotationTool="select";renderAnnotations(); }
+  });
+  $("imageModalImg").addEventListener("load",fitStratCanvas);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(()=>{if(openStratImage)fitStratCanvas();}).observe($("stratImageStage"));
+}
+
 function stratNotesDirty() {
   return Boolean(openStratImage && $("stratNotesInput")?.value !== openStratImage.notes);
 }
@@ -2100,14 +2367,17 @@ function syncOpenStratNotes() {
   }
   $("stratNotesInput").readOnly = currentProfile?.role !== "admin";
   $("saveStratNotesBtn").classList.toggle("hidden", currentProfile?.role !== "admin");
+  syncImageAnnotations(item);
 }
 
 window.openStratImage = (id) => {
-  if (savingStratNotes) return;
+  if (savingStratNotes || savingAnnotations) return;
   const item = stratById(id);
   if (!item?.imageData) return;
-  if (stratNotesDirty() && !confirm("Abandonner le texte non enregistré pour ouvrir cette image ?")) return;
+  if (stratEditorDirty() && !confirm("Abandonner le texte et les annotations non enregistrés pour ouvrir cette image ?")) return;
   openStratImage = { id, teamId: currentProfile.teamId, notes: String(item.notes || "") };
+  initAnnotationEditor();
+  loadImageAnnotations(item);
   $("imageModalTitle").textContent = item.name || "Image";
   $("imageModalImg").src = item.imageData;
   $("stratNotesInput").value = openStratImage.notes;
@@ -2115,6 +2385,7 @@ window.openStratImage = (id) => {
   syncOpenStratNotes();
   setImageZoom(1);
   $("imageModal")?.classList.remove("hidden");
+  fitStratCanvas();
 };
 
 async function saveStratNotes() {
@@ -2144,18 +2415,19 @@ async function saveStratNotes() {
 
 function closeImageModal(force = false) {
   // A click event is not a force flag.
-  if (force !== true && savingStratNotes) return;
-  if (force !== true && stratNotesDirty() && !confirm("Fermer et abandonner le texte non enregistré ?")) return;
+  if (force !== true && (savingStratNotes || savingAnnotations)) return;
+  if (force !== true && stratEditorDirty() && !confirm("Fermer et abandonner le texte et les annotations non enregistrés ?")) return;
   $("imageModal")?.classList.add("hidden");
   if ($("imageModalImg")) $("imageModalImg").src = "";
   if ($("stratNotesInput")) $("stratNotesInput").value = "";
   openStratImage = null;
+  imageAnnotations=[]; annotationGesture=null; selectedAnnotationId=""; annotationUndo=[]; annotationRedo=[];
+  if ($("annotationOverlay")) $("annotationOverlay").innerHTML="";
 }
 
 function setImageZoom(value) {
   imageZoom = Math.max(0.4, Math.min(3, value));
-  const img = $("imageModalImg");
-  if (img) img.style.transform = `scale(${imageZoom})`;
+  fitStratCanvas();
   if ($("zoomResetBtn")) $("zoomResetBtn").textContent = `${Math.round(imageZoom * 100)}%`;
 }
 

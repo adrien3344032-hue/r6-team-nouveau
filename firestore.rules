@@ -114,7 +114,9 @@ service cloud.firestore {
         allow read: if isActiveMemberOf(teamId);
         allow create, update: if isAdminOf(teamId)
           && request.resource.data.get("notes", "") is string
-          && request.resource.data.get("notes", "").size() <= 20000;
+          && request.resource.data.get("notes", "").size() <= 20000
+          && request.resource.data.get("annotationData", "") is string
+          && request.resource.data.get("annotationData", "").size() <= 30000;
         allow delete: if isAdminOf(teamId);
       }
 
