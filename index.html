@@ -195,13 +195,15 @@
             <div class="section-title">
               <div>
                 <h2>Planning de la semaine</h2>
-                <p class="muted">Les admins planifient les scrims, tournois ou entraînements. Les joueurs peuvent consulter seulement.</p>
+                <p class="muted">Consulte les événements de la semaine et les informations pour l’équipe.</p>
               </div>
-              <div class="row" id="planningAdminActions">
+              <button id="editPlanningBtn" type="button" class="hidden">Créer / Modifier le planning</button>
+              <div class="row hidden" id="planningAdminActions">
                 <button id="addPlanningRowBtn" type="button" class="secondary">+ Ajouter une ligne</button>
                 <button id="savePlanningBtn" type="button">Enregistrer le planning</button>
                 <button id="reloadPlanningBtn" type="button" class="secondary">Recharger le planning</button>
                 <button id="clearPlanningBtn" type="button" class="danger">Vider</button>
+                <button id="cancelPlanningBtn" type="button" class="secondary">Annuler</button>
               </div>
             </div>
             <div id="planningWrap" class="planning-wrap"></div>
@@ -496,6 +498,7 @@
   </div>
 
   <script>window.R6_FIREBASE_CONFIG = {apiKey:"AIzaSyBGy9d4d3Wbhv44enQN535hA82um_bkxgw",authDomain:"r6-team-nouveau.firebaseapp.com",projectId:"r6-team-nouveau",storageBucket:"r6-team-nouveau.firebasestorage.app",messagingSenderId:"1083540215251",appId:"1:1083540215251:web:2a6526913e922fae00cb26"};</script>
-  <script type="module" src="app.js?v=20261031-joueurs-compacts"></script>
+  <script type="module" src="app.js?v=20261102-planning-consultation"></script>
 </body>
 </html>
+

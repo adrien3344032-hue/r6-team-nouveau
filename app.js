@@ -58,6 +58,7 @@ let players = [];
 let matches = [];
 let editingMatch = null;
 let planningVersion = null;
+let planningEditorContext = null;
 let openStratImage = null;
 let savingStratNotes = false;
 let savingMatch = false;
@@ -120,6 +121,8 @@ function bindAuth() {
   $("cancelEditMatchBtn")?.addEventListener("click", () => { resetMatchEditor(); setMsg("matchMsg", "Modification annulée."); });
   $("addRandomMatchBtn")?.addEventListener("click", addRandomMatch);
   $("savePlayerBtn").addEventListener("click", savePlayer);
+  $("editPlanningBtn")?.addEventListener("click", openPlanningEditor);
+  $("cancelPlanningBtn")?.addEventListener("click", closePlanningEditor);
   $("addPlanningRowBtn")?.addEventListener("click", () => addPlanningRow());
   $("savePlanningBtn")?.addEventListener("click", savePlanning);
   $("clearPlanningBtn")?.addEventListener("click", clearPlanning);
@@ -561,6 +564,9 @@ function teamDoc(collectionName, docId) {
 function clearDataSubscriptions() {
   closeImageModal(true);
   planningVersion = null;
+  planningEditorContext = null;
+  $("planningAdminActions")?.classList.add("hidden");
+  $("editPlanningBtn")?.classList.add("hidden");
   resetMatchEditor();
   dataUnsubscribes.forEach((fn) => {
     try { fn(); } catch (_) {}
@@ -1554,12 +1560,53 @@ function planningSignature(items) {
   return JSON.stringify(items.map(item => [item.day || "", item.time || "", item.type || "", item.title || "", item.map || "", item.notes || ""]));
 }
 
+function planningContextKey() {
+  return JSON.stringify([currentProfile?.teamId, currentUser?.uid, currentProfile?.role]);
+}
+
+function isPlanningEditing() {
+  return currentProfile?.role === "admin" && planningEditorContext === planningContextKey();
+}
+
+function openPlanningEditor() {
+  if (currentProfile?.role !== "admin" || isPlanningEditing()) return;
+  planningEditorContext = planningContextKey();
+  renderPlanning(true);
+  setMsg("planningMsg", "");
+  if (!planning.length) addPlanningRow();
+}
+
+function closePlanningEditor() {
+  if (!isPlanningEditing()) return;
+  const wrap = $("planningWrap");
+  if (planningSignature(readPlanningFromDom()) !== wrap.dataset.planningBaseline && !confirm("Abandonner les modifications du planning ?")) return;
+  planningEditorContext = null;
+  renderPlanning(true);
+  setMsg("planningMsg", "Édition annulée.");
+}
+
+function renderPlanningEditor(items) {
+  const wrap = $("planningWrap");
+  if (!items.length) {
+    wrap.innerHTML = `<p class="muted">Aucune ligne de planning. Clique sur “+ Ajouter une ligne”.</p>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="planning-admin-list">${items.map((item, i) => planningRowHtml(item, i)).join("")}</div>`;
+  wrap.querySelectorAll("[data-remove-planning]").forEach((btn) => btn.addEventListener("click", () => {
+    btn.closest(".planning-row")?.remove();
+  }));
+}
+
 function renderPlanning(force = false) {
   const wrap = $("planningWrap");
   if (!wrap) return;
   const isAdmin = currentProfile?.role === "admin";
-  const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid, currentProfile?.role]);
-  if (isAdmin && !force && wrap.dataset.planningContext === context && wrap.dataset.planningBaseline !== undefined) {
+  const context = planningContextKey();
+  if (planningEditorContext !== context) planningEditorContext = null;
+  const editing = isPlanningEditing();
+  $("editPlanningBtn")?.classList.toggle("hidden", !isAdmin || editing);
+  $("planningAdminActions")?.classList.toggle("hidden", !editing);
+  if (editing && !force && wrap.dataset.planningContext === context && wrap.dataset.planningBaseline !== undefined) {
     const local = planningSignature(readPlanningFromDom());
     const remote = planningSignature(planning);
     if (local === remote) {
@@ -1575,16 +1622,8 @@ function renderPlanning(force = false) {
   wrap.dataset.planningContext = context;
   wrap.dataset.planningBaseline = planningSignature(planning);
   wrap.dataset.planningVersion = matchFingerprint(planningVersion);
-  $("planningAdminActions")?.classList.toggle("hidden", !isAdmin);
-  if (isAdmin) {
-    if (!planning.length) {
-      wrap.innerHTML = `<p class="muted">Aucune ligne de planning. Clique sur “+ Ajouter une ligne”.</p>`;
-      return;
-    }
-    wrap.innerHTML = `<div class="planning-admin-list">${planning.map((item, i) => planningRowHtml(item, i)).join("")}</div>`;
-    wrap.querySelectorAll("[data-remove-planning]").forEach((btn) => btn.addEventListener("click", () => {
-      btn.closest(".planning-row")?.remove();
-    }));
+  if (editing) {
+    renderPlanningEditor(planning);
     return;
   }
   if (!planning.length) {
@@ -1653,13 +1692,10 @@ function planningCardHtml(item) {
 }
 
 function addPlanningRow(item = {}) {
-  const draftVersion = $("planningWrap")?.dataset.planningVersion;
-  const draftBaseline = $("planningWrap")?.dataset.planningBaseline;
-  planning = readPlanningFromDom();
-  planning.push({ day: item.day || days[0], time: item.time || "20:30", type: item.type || "Scrim", title: item.title || "", map: item.map || "", notes: item.notes || "" });
-  renderPlanning(true);
-  if (draftVersion !== undefined) $("planningWrap").dataset.planningVersion = draftVersion;
-  if (draftBaseline !== undefined) $("planningWrap").dataset.planningBaseline = draftBaseline;
+  if (!isPlanningEditing()) return;
+  const items = readPlanningFromDom();
+  items.push({ day: item.day || days[0], time: item.time || "20:30", type: item.type || "Scrim", title: item.title || "", map: item.map || "", notes: item.notes || "" });
+  renderPlanningEditor(items);
 }
 
 function readPlanningFromDom() {
@@ -1672,7 +1708,7 @@ function readPlanningFromDom() {
 }
 
 async function savePlanning() {
-  if (currentProfile?.role !== "admin") return;
+  if (!isPlanningEditing()) return;
   try {
     const items = readPlanningFromDom().sort((a, b) => days.indexOf(a.day) - days.indexOf(b.day) || String(a.time).localeCompare(String(b.time)));
     const ref = teamDoc("planning", "week");
@@ -1683,6 +1719,9 @@ async function savePlanning() {
       if (expected !== undefined && matchFingerprint(version) !== expected) throw new Error("Le planning a changé depuis ton brouillon. Tes modifications sont conservées. Recharge le planning avant de réessayer.");
       transaction.set(ref, { items, updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
     });
+    planning = items;
+    planningEditorContext = null;
+    renderPlanning(true);
     await logActivity("planning", `Planning mis à jour (${items.length} ligne${items.length > 1 ? "s" : ""})`);
     setMsg("planningMsg", "Planning enregistré. Les joueurs le voient directement.");
   } catch (err) {
@@ -1691,7 +1730,7 @@ async function savePlanning() {
 }
 
 async function clearPlanning() {
-  if (currentProfile?.role !== "admin") return;
+  if (!isPlanningEditing()) return;
   if (!confirm("Vider le planning de la semaine ?")) return;
   try {
     const ref = teamDoc("planning", "week");
@@ -1702,6 +1741,7 @@ async function clearPlanning() {
       transaction.set(ref, { items: [], updatedAt: serverTimestamp(), updatedBy: currentUser.uid }, { merge: true });
     });
     planning = [];
+    planningEditorContext = null;
     renderPlanning(true);
     await logActivity("planning", "Planning vidé");
     setMsg("planningMsg", "Planning vidé.");
@@ -2815,3 +2855,4 @@ function syncRoundCounters() {
   }
   const help=$("roundCountersHelp");if(help)help.textContent=automatic?"Entry K / D, plants, defuses et clutches sont calculés depuis les rounds saisis. Complète tous les rounds pour obtenir les totaux du match. K/D attaque/défense reste manuel.":"Renseigne les rounds pour calculer automatiquement Entry K / D, plants, defuses et clutches. Sans rounds, les anciens totaux enregistrés sont conservés. K/D attaque/défense reste manuel.";
 }
+
