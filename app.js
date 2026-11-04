@@ -846,6 +846,7 @@ function renderSummary() {
 }
 
 function renderMatchPlayerInputs(reset = false) {
+  setupReplayImport();
   const wrap = $("matchPlayersWrap");
   if (!wrap) return;
   const context = JSON.stringify([currentProfile?.teamId, currentUser?.uid]);
@@ -1178,6 +1179,8 @@ function matchEditorPlayers() {
 
 function resetMatchEditor() {
   editingMatch = null;
+  replayImport = null;
+  if ($("replayImportPanel")) $("replayImportPanel").replaceChildren();
   if (!$("addMatchBtn")) return;
   $("addMatchBtn").textContent = "Ajouter le match complet";
   $("cancelEditMatchBtn")?.classList.add("hidden");
@@ -1192,6 +1195,8 @@ window.editMatch = (id) => {
   const match = matches.find(m => m.id === id);
   if (!match) return;
   if (editingMatch && !confirm("Remplacer la modification en cours par ce match ?")) return;
+  replayImport = null;
+  $("replayImportPanel")?.replaceChildren();
   const { id: ignored, ...data } = match;
   editingMatch = { id, teamId: currentProfile.teamId, data: JSON.parse(JSON.stringify(data)) };
   const fields = { matchDate: "date", matchOpponent: "opponent", matchMap: "map", matchMode: "mode", matchTeamScore: "teamScore", matchEnemyScore: "enemyScore", matchResult: "result", matchVodUrl: "vodUrl", matchNotes: "notes" };
@@ -1222,6 +1227,8 @@ window.editMatch = (id) => {
 
 async function addMatch() {
   if (currentProfile?.role !== "admin" || savingMatch) return;
+  const importError = validateReplayReview();
+  if (importError) { setMsg("matchMsg", importError); return; }
   const rounds = collectRounds();
   const playerStats = enrichStatsWithRounds(collectPlayerStats(), rounds);
   if (!Object.keys(playerStats).length) {
@@ -1249,7 +1256,8 @@ async function addMatch() {
       vodUrl: safeVodUrl($("matchVodUrl")?.value),
       notes: $("matchNotes").value.trim(),
       playerStats,
-      rounds
+      rounds,
+      ...(replayImport ? { replaySource: { matchKey: replayImport.key, application: replayImport.application } } : {})
     };
     let matchRef;
     if (edit) {
@@ -1261,6 +1269,13 @@ async function addMatch() {
         const latest = snapshot.data();
         if (matchFingerprint(latest) !== matchFingerprint(edit.data)) throw new Error("Ce match a été modifié par un autre admin. Annule puis rouvre le match pour récupérer sa version.");
         transaction.update(matchRef, { ...payload, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
+      });
+    } else if (replayImport) {
+      matchRef = teamDoc("matches", `replay_${replayImport.key}`);
+      await runTransaction(db, async transaction => {
+        const existing = await transaction.get(matchRef);
+        if (existing.exists()) throw new Error("Ce replay a déjà été importé. Modifie le match existant.");
+        transaction.set(matchRef, { ...payload, createdAt: serverTimestamp(), createdBy: currentUser.uid });
       });
     } else {
       matchRef = await addDoc(teamCollection("matches"), { ...payload, createdAt: serverTimestamp(), createdBy: currentUser.uid });
@@ -2856,3 +2871,105 @@ function syncRoundCounters() {
   const help=$("roundCountersHelp");if(help)help.textContent=automatic?"Entry K / D, plants, defuses et clutches sont calculés depuis les rounds saisis. Complète tous les rounds pour obtenir les totaux du match. K/D attaque/défense reste manuel.":"Renseigne les rounds pour calculer automatiquement Entry K / D, plants, defuses et clutches. Sans rounds, les anciens totaux enregistrés sont conservés. K/D attaque/défense reste manuel.";
 }
 
+
+
+
+// Replay imports only prepare an editable draft. Saving remains an explicit admin action.
+let replayImport = null;
+const replayPseudo = value => String(value || "").normalize("NFKC").trim().toLowerCase();
+function setupReplayImport() {
+  if ($("replayImportFile") || !$("matchPlayersWrap")) return;
+  const box = document.createElement("div");
+  box.innerHTML = `<button type="button" id="replayImportBtn">Importer un match JSON</button><input id="replayImportFile" type="file" accept=".json,application/json" hidden><div id="replayImportPanel" aria-live="polite"></div>`;
+  $("matchPlayersWrap").before(box);
+  $("replayImportBtn").onclick = () => { if(currentProfile?.role === "admin" && !savingMatch) $("replayImportFile").click(); };
+  $("replayImportFile").onchange = async event => {
+    const file = event.target.files?.[0];
+    const context = currentProfile?.teamId;
+    try {
+      if (!file || currentProfile?.role !== "admin" || savingMatch) return;
+      if(file.size > 5*1024*1024) throw new Error("Fichier trop volumineux (5 Mo maximum).");
+      const data = JSON.parse((await file.text()).replace(/^\uFEFF/, ""));
+      if(context !== currentProfile?.teamId || currentProfile?.role !== "admin" || savingMatch) return;
+      showReplayMapping(data);
+    } catch(error) { setMsg("matchMsg", `Import impossible : ${error.message}`); }
+    finally { event.target.value = ""; }
+  };
+}
+function checkReplayFile(data) {
+  if(data?.schema !== "r6-debrief-to-r6-team" || data.schemaVersion !== 1) throw new Error("Format JSON non pris en charge : utilise l’export R6 Team de R6 DEBRIEF.");
+  const d=data.siteDraft;
+  if(!d || !Array.isArray(d.playerStatsByPseudo) || !d.playerStatsByPseudo.length || d.playerStatsByPseudo.length>20 || !Array.isArray(d.rounds) || d.rounds.length>100) throw new Error("Joueurs ou rounds invalides.");
+  if(!/^[a-zA-Z0-9_-]{1,100}$/.test(data.source?.matchKey || "")) throw new Error("Identifiant du match manquant ou invalide.");
+  const names = d.playerStatsByPseudo.map(p=>replayPseudo(p.pseudo));
+  if(names.some(n=>!n) || new Set(names).size!==names.length) throw new Error("Pseudos manquants ou en double.");
+  for(const p of d.playerStatsByPseudo) for(const field of ["kills","deaths","assists","headshots"]) if(p[field]!=null && (!Number.isInteger(p[field]) || p[field]<0)) throw new Error("Statistiques invalides.");
+  return d;
+}
+function showReplayMapping(data) {
+  checkReplayFile(data);
+  if(matches.some(m=>m.replaySource?.matchKey===data.source.matchKey || m.id===`replay_${data.source.matchKey}`)) throw new Error("Ce replay a déjà été importé. Modifie le match existant.");
+  const mappingTeamId=currentProfile.teamId;
+  const panel=$("replayImportPanel");panel.replaceChildren();
+  const title=document.createElement("p");title.textContent="Associe chaque pseudo à un compte de l’équipe, puis préremplis le formulaire. Le brouillon actuel sera remplacé.";panel.append(title);
+  data.siteDraft.playerStatsByPseudo.forEach((p,i)=>{
+    const label=document.createElement("label");label.textContent=p.pseudo+" ";
+    const select=document.createElement("select");select.dataset.replayPlayer=i;
+    const blank=document.createElement("option");blank.value="";blank.textContent="Choisir le joueur…";select.append(blank);
+    const candidates=players.filter(x=>replayPseudo(x.name)===replayPseudo(p.pseudo));
+    for(const player of players) {const opt=document.createElement("option");opt.value=player.uid;opt.textContent=player.name;select.append(opt);}
+    select.value=candidates.length===1?candidates[0].uid:"";label.append(select);panel.append(label);
+  });
+  const apply=document.createElement("button");apply.type="button";apply.textContent="Préremplir le match à vérifier";panel.append(apply);
+  apply.onclick=()=>{try {
+    if(currentProfile?.role!=="admin" || savingMatch) return;
+    if(mappingTeamId!==currentProfile.teamId) throw new Error("L’équipe a changé. Réimporte le fichier.");
+    const mapping=[...panel.querySelectorAll("[data-replay-player]")].map(el=>el.value);
+    if(mapping.some(uid=>!players.some(p=>p.uid===uid)) || new Set(mapping).size!==mapping.length) throw new Error("Choisis un compte différent pour chaque pseudo.");
+    if(!confirm("Remplacer le formulaire actuel par le match importé ? Aucun match ne sera enregistré avant ta validation.")) return;
+    applyReplayDraft(data,mapping);
+  }catch(error){setMsg("matchMsg",error.message);}};
+}
+function applyReplayDraft(data,mapping) {
+  const d=checkReplayFile(data);
+  const uidByPseudo=new Map(d.playerStatsByPseudo.map((p,i)=>[replayPseudo(p.pseudo),mapping[i]]));
+  const rounds=d.rounds.map(r=>{
+    const out={number:r.number,side:r.side || "",result:r.result || "",opening:r.opening || "",site:r.site || "",notes:r.notes || ""};
+    for(const field of ["firstKill","firstDeath","plant","defuse","clutch"]) {
+      const pseudo=r[field+"Pseudo"];out[field+"Uid"]=pseudo?uidByPseudo.get(replayPseudo(pseudo)):"";
+      if(pseudo && !out[field+"Uid"]) throw new Error(`Round ${r.number} : pseudo inconnu ${pseudo}.`);
+    }
+    if(!sides.includes(out.side) || !roundResults.includes(out.result)) throw new Error(`Round ${r.number} : côté ou résultat inconnu, export à compléter.`);
+    return out;
+  });
+  resetMatchEditor();
+  const map = ({LairY10:"Repaire",Lair:"Repaire"})[d.map] || d.map || "";
+  const values={matchDate:d.date,matchOpponent:d.opponent,matchMap:COMPETITIVE_MAPS.includes(map)?map:"",matchMode:MATCH_TYPES.includes(d.mode)?d.mode:"",matchTeamScore:d.teamScore,matchEnemyScore:d.enemyScore,matchResult:d.result,matchVodUrl:d.vodUrl,matchNotes:d.notes};
+  for(const [id,value] of Object.entries(values)) {
+    const el=$(id);
+    if(el.tagName==="SELECT" && (value==null || value==="") && ![...el.querySelectorAll("option")].some(o=>o.value==="")) {const opt=document.createElement("option");opt.value="";opt.textContent="À renseigner";el.prepend(opt);}
+    el.value=value??"";
+  }
+  const stats=new Map(mapping.map((uid,i)=>[uid,d.playerStatsByPseudo[i]]));
+  for(const row of $("matchPlayersWrap").querySelectorAll("[data-stat-row]")) {
+    const p=stats.get(row.dataset.uid);row.querySelector('[data-stat="present"]').checked=Boolean(p);
+    for(const field of ["kills","deaths","assists","headshots"]) {const el=row.querySelector(`[data-stat="${field}"]`);el.value=p?.[field]??"";el.placeholder=p?"À vérifier":"";}
+    for(const side of ["attack","defense"]) for(const field of ["kills","deaths"]) row.querySelector(`[data-stat="${side}_${field}"]`).value=p?.sideStats?.[side]?.[field]??"";
+  }
+  rounds.forEach(addRoundRow);
+  replayImport={key:data.source.matchKey,application:String(data.source.application||"R6 DEBRIEF"),teamId:currentProfile.teamId};
+  const panel=$("replayImportPanel");panel.replaceChildren();
+  const heading=document.createElement("p");heading.textContent=`Import prêt : ${stats.size} joueurs, ${rounds.length} rounds. Vérifie le score, les joueurs, les assists et les événements avant d’enregistrer.`;panel.append(heading);
+  const list=document.createElement("ul");for(const warning of data.requiresReview || []) {const li=document.createElement("li");li.textContent=String(warning);list.append(li);}panel.append(list);
+  const label=document.createElement("label");const review=document.createElement("input");review.type="checkbox";review.id="replayReviewConfirmed";label.append(review,document.createTextNode(" J’ai vérifié les correspondances joueurs, les données manquantes et les avertissements."));panel.append(label);
+  $("cancelEditMatchBtn")?.classList.remove("hidden");
+  setMsg("matchMsg","Match prérempli. Complète les champs vides, vérifie les rounds puis clique sur Ajouter le match complet.");
+}
+function validateReplayReview() {
+  if(!replayImport) return "";
+  if(replayImport.teamId!==currentProfile?.teamId) return "L’équipe a changé. Réimporte le fichier.";
+  if(!$("matchOpponent").value.trim() || !$("matchMap").value || !$("matchMode").value) return "Complète l’adversaire, la carte et le type de match.";
+  for(const row of $("matchPlayersWrap").querySelectorAll("[data-stat-row]")) if(row.querySelector('[data-stat="present"]').checked) for(const field of ["kills","deaths","assists","headshots"]) if(row.querySelector(`[data-stat="${field}"]`).value==="") return `Complète ${field} pour ${row.dataset.name} : la donnée est inconnue dans le replay.`;
+  if(!$("replayReviewConfirmed")?.checked) return "Confirme la vérification du match importé avant de l’enregistrer.";
+  return "";
+}
