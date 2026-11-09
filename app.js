@@ -40,7 +40,8 @@ const COMPETITIVE_MAPS = [
   "Café Dostoyevsky",
   "Repaire",
   "Labo de Nighthaven",
-  "Forteresse"
+  "Forteresse",
+  "Villa"
 ];
 const MATCH_TYPES = ["Scrim", "Tournoi"];
 const SIM_OPPONENTS = ["Team Alpha", "Team Bravo", "Night Wolves", "Blue Stack", "Phoenix", "Vortex", "Aegis", "Nova Five"];
